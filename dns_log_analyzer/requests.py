@@ -2,6 +2,7 @@
 import argparse
 import datetime as dt
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -43,14 +44,14 @@ def diagnostic(db,source,reason):
 
 def process_dnsmasq(db,e,offset):
     if not e or not e["query_id"] or not e["client"]:return diagnostic(db,"dnsmasq","unparsed")
-    fields=__import__("json").loads(e["fields"])
+    fields=json.loads(e["fields"])
     identity=f'{fields["pid"]}:{e["query_id"]}:{e["client"]}'
     # A new query line defines a new request generation. Query IDs may be reused.
     if e["event"]=="query":
         identity+=f':{offset}'
         db.execute("INSERT OR IGNORE INTO dnsmasq_requests(identity,first_seen,last_seen,client,domain,qtype) VALUES(?,?,?,?,?,?)",(identity,e["ts"],e["ts"],e["client"],e["domain"],e["qtype"]))
         return
-    row=db.execute("SELECT id FROM dnsmasq_requests WHERE identity LIKE ? ORDER BY id DESC LIMIT 1",(identity+":%",)).fetchone()
+    row=db.execute("SELECT id FROM dnsmasq_requests WHERE identity LIKE ? AND first_seen<=? ORDER BY id DESC LIMIT 1",(identity+":%",e["ts"])).fetchone()
     if not row:return diagnostic(db,"dnsmasq","orphan_event")
     rid=row[0]
     if e["event"]=="forwarded":
@@ -69,9 +70,20 @@ def process_dnsproxy(db,e,offset):
     elif event=="sending request":
         db.execute("INSERT OR IGNORE INTO dnsproxy_upstream_attempts(identity,first_seen,last_seen,domain,qtype,upstream,protocol) VALUES(?,?,?,?,?,?,?)",(f"line:{offset}",e["ts"],e["ts"],e["domain"],e["qtype"],e["upstream"],e["protocol"]))
     elif event=="exchange failed":
-        # Error is retained as an unmatched upstream attempt: concurrent same-domain queries
-        # cannot safely be paired without a stable request ID.
-        db.execute("INSERT OR IGNORE INTO dnsproxy_upstream_attempts(identity,first_seen,last_seen,domain,qtype,upstream,protocol,status,duration_ms,error) VALUES(?,?,?,?,?,?,?,?,?,?)",(f"failure:{offset}",e["ts"],e["ts"],e["domain"],e["qtype"],e["upstream"],e["protocol"],"failed",e["duration_ms"],e["error"]))
+        # Do not guess the matching request under concurrency.
+        fields=json.loads(e["fields"])
+        question=fields.get("question","")
+        match=re.search(r";([^\\t ]+?)[.]?(?:\\\\t|\\t)IN(?:\\\\t|\\t)\\s*(\\w+)",question)
+        domain=match.group(1).rstrip(".") if match else e["domain"]
+        qtype=match.group(2) if match else e["qtype"]
+        candidates=[]
+        if e["upstream"] and domain and qtype:
+            candidates=db.execute("SELECT id FROM dnsproxy_upstream_attempts WHERE status='sent' AND upstream=? AND domain=? AND qtype=? AND first_seen<=? AND (julianday(?) - julianday(first_seen))*86400 BETWEEN 0 AND 120",(e["upstream"],domain,qtype,e["ts"],e["ts"])).fetchall()
+        if len(candidates)==1:
+            db.execute("UPDATE dnsproxy_upstream_attempts SET status='failed',last_seen=?,duration_ms=?,error=? WHERE id=?",(e["ts"],e["duration_ms"],e["error"],candidates[0][0]))
+        else:
+            db.execute("INSERT OR IGNORE INTO dnsproxy_upstream_attempts(identity,first_seen,last_seen,domain,qtype,upstream,protocol,status,duration_ms,error) VALUES(?,?,?,?,?,?,?,?,?,?)",(f"failure:{offset}",e["ts"],e["ts"],domain,qtype,e["upstream"],e["protocol"],"failed_unmatched",e["duration_ms"],e["error"]))
+            diagnostic(db,"dnsproxy","ambiguous_or_orphan_failure")
     elif event in ("exchange successfully finished","response received","resolved"):
         diagnostic(db,"dnsproxy","unmatched_completion")
     elif event in ("in","out","dialing","connection succeeded","no hosts records found","handling new udp packet"):
