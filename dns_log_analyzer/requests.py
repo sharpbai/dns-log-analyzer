@@ -2,6 +2,7 @@
 import argparse
 import datetime as dt
 import hashlib
+import gzip
 import json
 import os
 import re
@@ -37,21 +38,24 @@ def open_db(path):
     CREATE INDEX IF NOT EXISTS idx_attempt_time ON dnsproxy_upstream_attempts(first_seen);
     CREATE INDEX IF NOT EXISTS idx_attempt_upstream ON dnsproxy_upstream_attempts(upstream);
     """)
+    if 'generation' not in [x[1] for x in db.execute('PRAGMA table_info(ingest_checkpoints)')]:
+        db.execute('ALTER TABLE ingest_checkpoints ADD COLUMN generation INTEGER DEFAULT 0')
+        db.commit()
     return db
 
 def diagnostic(db,source,reason):
     db.execute("INSERT INTO parser_diagnostics(source,reason,count) VALUES(?,?,1) ON CONFLICT(source,reason) DO UPDATE SET count=count+1",(source,reason))
 
-def process_dnsmasq(db,e,offset):
+def process_dnsmasq(db,e,offset,generation=0):
     if not e or not e["query_id"] or not e["client"]:return diagnostic(db,"dnsmasq","unparsed")
     fields=json.loads(e["fields"])
     identity=f'{fields["pid"]}:{e["query_id"]}:{e["client"]}'
     # A new query line defines a new request generation. Query IDs may be reused.
     if e["event"]=="query":
-        identity+=f':{offset}'
+        identity+=f':{generation}:{offset}'
         db.execute("INSERT OR IGNORE INTO dnsmasq_requests(identity,first_seen,last_seen,client,domain,qtype) VALUES(?,?,?,?,?,?)",(identity,e["ts"],e["ts"],e["client"],e["domain"],e["qtype"]))
         return
-    row=db.execute("SELECT id FROM dnsmasq_requests WHERE identity LIKE ? AND first_seen<=? ORDER BY id DESC LIMIT 1",(identity+":%",e["ts"])).fetchone()
+    row=db.execute("SELECT id FROM dnsmasq_requests WHERE identity LIKE ? AND first_seen<=? ORDER BY id DESC LIMIT 1",(identity+f":{generation}:%",e["ts"])).fetchone()
     if not row:return diagnostic(db,"dnsmasq","orphan_event")
     rid=row[0]
     if e["event"]=="forwarded":
@@ -62,11 +66,11 @@ def process_dnsmasq(db,e,offset):
         db.execute("UPDATE dnsmasq_requests SET last_seen=?,response_count=response_count+1,result=COALESCE(?,result),state='answered' WHERE id=?",(e["ts"],e["result"],rid))
     else:diagnostic(db,"dnsmasq","other_event")
 
-def process_dnsproxy(db,e,offset):
+def process_dnsproxy(db,e,offset,generation=0):
     if not e:return diagnostic(db,"dnsproxy","unparsed")
     event=e["event"]
     if event=="handling request":
-        db.execute("INSERT OR IGNORE INTO dnsproxy_requests(identity,first_seen,last_seen,client,domain,qtype) VALUES(?,?,?,?,?,?)",(f"line:{offset}",e["ts"],e["ts"],e["client"],e["domain"],e["qtype"]))
+        db.execute("INSERT OR IGNORE INTO dnsproxy_requests(identity,first_seen,last_seen,client,domain,qtype) VALUES(?,?,?,?,?,?)",(f"g:{generation}:line:{offset}",e["ts"],e["ts"],e["client"],e["domain"],e["qtype"]))
     elif event in ("exchange successfully finished","exchange failed"):
         fields=json.loads(e["fields"])
         question=fields.get("question","").replace(chr(92)+"t",chr(9))
@@ -76,7 +80,7 @@ def process_dnsproxy(db,e,offset):
             return
         domain,qtype=match.group(1).rstrip("."),match.group(2)
         status="success" if event=="exchange successfully finished" else "failed"
-        db.execute("INSERT OR IGNORE INTO dnsproxy_upstream_attempts(identity,first_seen,last_seen,domain,qtype,upstream,protocol,status,duration_ms,error) VALUES(?,?,?,?,?,?,?,?,?,?)",(f"completion:{offset}",e["ts"],e["ts"],domain,qtype,e["upstream"],e["protocol"],status,e["duration_ms"],e["error"]))
+        db.execute("INSERT OR IGNORE INTO dnsproxy_upstream_attempts(identity,first_seen,last_seen,domain,qtype,upstream,protocol,status,duration_ms,error) VALUES(?,?,?,?,?,?,?,?,?,?)",(f"g:{generation}:completion:{offset}",e["ts"],e["ts"],domain,qtype,e["upstream"],e["protocol"],status,e["duration_ms"],e["error"]))
     elif event in ("sending request","response received","resolved"):
         pass
     elif event in ("in","out","dialing","connection succeeded","no hosts records found","handling new udp packet"):
@@ -86,37 +90,60 @@ def process_dnsproxy(db,e,offset):
 def head_hash(path):
     with open(path,"rb") as f:return hashlib.sha256(f.read(4096)).hexdigest()
 
-def ingest(db,source,path,from_end=False,batch_size=1000):
-    path=Path(path);st=path.stat();h=head_hash(path)
-    cp=db.execute("SELECT device,inode,offset,head_hash FROM ingest_checkpoints WHERE source=?",(source,)).fetchone()
-    # Compare only the previously consumed prefix. For small files, hashing
-    # the entire current 4 KiB would change every time a line is appended.
-    prefix_ok=False
-    if cp and cp[0]==st.st_dev and cp[1]==st.st_ino and cp[2]<=st.st_size:
-        with path.open("rb") as check:
-            prefix_ok=hashlib.sha256(check.read(min(4096,cp[2]))).hexdigest()==cp[3]
-    start=cp[2] if prefix_ok else (st.st_size if from_end and cp is None else 0)
-    if cp and not prefix_ok:
-        with db: diagnostic(db,source,"rotation_or_truncation_detected")
+def _digest(stream, n):
+    stream.seek(0)
+    return hashlib.sha256(stream.read(min(n,4096))).hexdigest()
+
+def _consume(db,source,stream,start,generation,batch_size):
+    stream.seek(start)
     total=0
-    with path.open("rb") as f:
-        f.seek(start)
-        while True:
-            batch=[]
-            for _ in range(batch_size):
-                offset=f.tell();data=f.readline()
-                if not data:break
-                if not data.endswith(b"\n"):f.seek(offset);break
-                batch.append((offset,data.decode("utf8","replace").rstrip("\r\n")))
-            if not batch:break
+    while True:
+        batch=[]
+        for _ in range(batch_size):
+            offset=stream.tell(); line=stream.readline()
+            if not line: break
+            if not line.endswith(bytes([10])): stream.seek(offset); break
+            batch.append((offset,line.decode('utf8','replace').rstrip(chr(10)+chr(13))))
+        if not batch: break
+        with db:
+            for offset,line in batch:
+                e=parse(source,line)
+                if source=='dnsmasq': process_dnsmasq(db,e,offset,generation)
+                else: process_dnsproxy(db,e,offset,generation)
+        total+=len(batch)
+    return total,stream.tell()
+
+def ingest(db,source,path,from_end=False,batch_size=1000):
+    path=Path(path); st=path.stat()
+    cp=db.execute('SELECT device,inode,offset,head_hash,generation FROM ingest_checkpoints WHERE source=?',(source,)).fetchone()
+    with path.open('rb') as live:
+        same=bool(cp and (cp[0],cp[1])==(st.st_dev,st.st_ino))
+        valid=bool(same and cp[2]<=st.st_size and _digest(live,cp[2])==cp[3])
+        generation=cp[4] if cp else 0
+        total=0
+        if cp and not valid:
+            recovered=False
+            for archive in (Path(str(path)+'.1'),Path(str(path)+'.1.gz')):
+                if not archive.exists():continue
+                try:
+                    opener=gzip.open if archive.suffix=='.gz' else open
+                    with opener(archive,'rb') as old:
+                        if _digest(old,cp[2])!=cp[3]:continue
+                        old.seek(0,2)
+                        if old.tell()<cp[2]:continue
+                        count,_=_consume(db,source,old,cp[2],generation,batch_size)
+                        total+=count; recovered=True; break
+                except (OSError,EOFError):continue
             with db:
-                for offset,line in batch:
-                    e=parse(source,line)
-                    (process_dnsmasq if source=="dnsmasq" else process_dnsproxy)(db,e,offset)
-                with path.open("rb") as check:
-                    consumed_hash=hashlib.sha256(check.read(min(4096,f.tell()))).hexdigest()
-                db.execute("INSERT INTO ingest_checkpoints VALUES(?,?,?,?,?,?,datetime('now')) ON CONFLICT(source) DO UPDATE SET path=excluded.path,device=excluded.device,inode=excluded.inode,offset=excluded.offset,head_hash=excluded.head_hash,updated_at=excluded.updated_at",(source,str(path),st.st_dev,st.st_ino,f.tell(),consumed_hash))
-            total+=len(batch)
+                diagnostic(db,source,'rotation_or_truncation_detected')
+                if not recovered:diagnostic(db,source,'unrecovered_rotation_gap')
+            generation+=1
+        start=cp[2] if valid else (st.st_size if from_end and cp is None else 0)
+        count,offset=_consume(db,source,live,start,generation,batch_size)
+        total+=count
+        digest=_digest(live,offset)
+        with db:
+            db.execute("INSERT INTO ingest_checkpoints(source,path,device,inode,offset,head_hash,updated_at,generation) VALUES(?,?,?,?,?,?,datetime('now'),?) ON CONFLICT(source) DO UPDATE SET path=excluded.path,device=excluded.device,inode=excluded.inode,offset=excluded.offset,head_hash=excluded.head_hash,updated_at=excluded.updated_at,generation=excluded.generation",(source,str(path),st.st_dev,st.st_ino,offset,digest,generation))
     return total
 
 def main():
