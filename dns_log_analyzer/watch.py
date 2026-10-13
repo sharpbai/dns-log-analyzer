@@ -114,10 +114,11 @@ def run(db,paths,interval=30,debounce=0.15,once=False):
                     print(f"{source}: {count} lines",flush=True)
             except (OSError,sqlite3.Error) as exc:
                 print(f"{source}: {type(exc).__name__}: {exc}",file=sys.stderr,flush=True)
-    consume(paths)
     if once:
+        consume(paths)
         return
     watcher=Watcher(paths)
+    consume(paths)
     stop=False
     def handle_stop(_signum,_frame):
         nonlocal stop
