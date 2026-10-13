@@ -45,4 +45,20 @@ class RequestTests(unittest.TestCase):
    self.assertEqual(ingest(db,"dnsproxy",p),1)
    self.assertEqual(db.execute("SELECT COUNT(*) FROM parser_diagnostics WHERE reason='rotation_or_truncation_detected'").fetchone()[0],1)
 
+ def test_copytruncate_archive_recovery_and_generation(self):
+  import gzip
+  with tempfile.TemporaryDirectory() as d:
+   p=Path(d)/'proxy.log';db=open_db(str(Path(d)/'test.db'))
+   def event(name):
+    return '2026/10/13 23:00:04.690634 DEBUG exchange successfully finished prefix=dnsproxy upstream=8.8.8.8:53 question=";'+name+'.\\tIN\\t A" duration=10ms'+chr(10)
+   p.write_text(event('first.example'))
+   self.assertEqual(ingest(db,'dnsproxy',p),1)
+   with p.open('a') as out:out.write(event('missed.example'))
+   with gzip.open(str(p)+'.1.gz','wb') as out:out.write(p.read_bytes())
+   p.write_text(event('new.example'))
+   self.assertEqual(ingest(db,'dnsproxy',p),2)
+   names={r[0] for r in db.execute('SELECT domain FROM dnsproxy_upstream_attempts')}
+   self.assertEqual(names,{'first.example','missed.example','new.example'})
+   self.assertEqual(ingest(db,'dnsproxy',p),0)
+   self.assertEqual(db.execute('SELECT generation FROM ingest_checkpoints WHERE source=?',('dnsproxy',)).fetchone()[0],1)
 if __name__=="__main__":unittest.main()
