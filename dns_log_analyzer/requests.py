@@ -89,7 +89,15 @@ def head_hash(path):
 def ingest(db,source,path,from_end=False,batch_size=1000):
     path=Path(path);st=path.stat();h=head_hash(path)
     cp=db.execute("SELECT device,inode,offset,head_hash FROM ingest_checkpoints WHERE source=?",(source,)).fetchone()
-    start=cp[2] if cp and cp[0]==st.st_dev and cp[1]==st.st_ino and cp[2]<=st.st_size and cp[3]==h else (st.st_size if from_end and cp is None else 0)
+    # Compare only the previously consumed prefix. For small files, hashing
+    # the entire current 4 KiB would change every time a line is appended.
+    prefix_ok=False
+    if cp and cp[0]==st.st_dev and cp[1]==st.st_ino and cp[2]<=st.st_size:
+        with path.open("rb") as check:
+            prefix_ok=hashlib.sha256(check.read(min(4096,cp[2]))).hexdigest()==cp[3]
+    start=cp[2] if prefix_ok else (st.st_size if from_end and cp is None else 0)
+    if cp and not prefix_ok:
+        with db: diagnostic(db,source,"rotation_or_truncation_detected")
     total=0
     with path.open("rb") as f:
         f.seek(start)
@@ -105,7 +113,9 @@ def ingest(db,source,path,from_end=False,batch_size=1000):
                 for offset,line in batch:
                     e=parse(source,line)
                     (process_dnsmasq if source=="dnsmasq" else process_dnsproxy)(db,e,offset)
-                db.execute("INSERT INTO ingest_checkpoints VALUES(?,?,?,?,?,?,datetime('now')) ON CONFLICT(source) DO UPDATE SET path=excluded.path,device=excluded.device,inode=excluded.inode,offset=excluded.offset,head_hash=excluded.head_hash,updated_at=excluded.updated_at",(source,str(path),st.st_dev,st.st_ino,f.tell(),h))
+                with path.open("rb") as check:
+                    consumed_hash=hashlib.sha256(check.read(min(4096,f.tell()))).hexdigest()
+                db.execute("INSERT INTO ingest_checkpoints VALUES(?,?,?,?,?,?,datetime('now')) ON CONFLICT(source) DO UPDATE SET path=excluded.path,device=excluded.device,inode=excluded.inode,offset=excluded.offset,head_hash=excluded.head_hash,updated_at=excluded.updated_at",(source,str(path),st.st_dev,st.st_ino,f.tell(),consumed_hash))
             total+=len(batch)
     return total
 
