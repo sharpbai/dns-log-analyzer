@@ -34,6 +34,7 @@ def open_db(path):
       source TEXT, reason TEXT, count INTEGER DEFAULT 0,
       PRIMARY KEY(source,reason));
     CREATE INDEX IF NOT EXISTS idx_masq_time ON dnsmasq_requests(first_seen);
+    CREATE INDEX IF NOT EXISTS idx_masq_identity_prefix ON dnsmasq_requests(identity COLLATE NOCASE);
     CREATE INDEX IF NOT EXISTS idx_proxy_time ON dnsproxy_requests(first_seen);
     CREATE INDEX IF NOT EXISTS idx_attempt_time ON dnsproxy_upstream_attempts(first_seen);
     CREATE INDEX IF NOT EXISTS idx_attempt_upstream ON dnsproxy_upstream_attempts(upstream);
