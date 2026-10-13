@@ -73,7 +73,8 @@ def process_dnsproxy(db,e,offset):
         # Do not guess the matching request under concurrency.
         fields=json.loads(e["fields"])
         question=fields.get("question","")
-        match=re.search(r";([^\\t ]+?)[.]?(?:\\\\t|\\t)IN(?:\\\\t|\\t)\\s*(\\w+)",question)
+        question=question.replace(chr(92)+"t",chr(9))
+        match=re.search(r";([^\\s]+)\\s+IN\\s+(\\w+)",question)
         domain=match.group(1).rstrip(".") if match else e["domain"]
         qtype=match.group(2) if match else e["qtype"]
         candidates=[]
