@@ -67,26 +67,18 @@ def process_dnsproxy(db,e,offset):
     event=e["event"]
     if event=="handling request":
         db.execute("INSERT OR IGNORE INTO dnsproxy_requests(identity,first_seen,last_seen,client,domain,qtype) VALUES(?,?,?,?,?,?)",(f"line:{offset}",e["ts"],e["ts"],e["client"],e["domain"],e["qtype"]))
-    elif event=="sending request":
-        db.execute("INSERT OR IGNORE INTO dnsproxy_upstream_attempts(identity,first_seen,last_seen,domain,qtype,upstream,protocol) VALUES(?,?,?,?,?,?,?)",(f"line:{offset}",e["ts"],e["ts"],e["domain"],e["qtype"],e["upstream"],e["protocol"]))
-    elif event=="exchange failed":
-        # Do not guess the matching request under concurrency.
+    elif event in ("exchange successfully finished","exchange failed"):
         fields=json.loads(e["fields"])
-        question=fields.get("question","")
-        question=question.replace(chr(92)+"t",chr(9))
-        match=re.search(r";([^\\s]+)\\s+IN\\s+(\\w+)",question)
-        domain=match.group(1).rstrip(".") if match else e["domain"]
-        qtype=match.group(2) if match else e["qtype"]
-        candidates=[]
-        if e["upstream"] and domain and qtype:
-            candidates=db.execute("SELECT id FROM dnsproxy_upstream_attempts WHERE status='sent' AND upstream=? AND domain=? AND qtype=? AND first_seen<=? AND (julianday(?) - julianday(first_seen))*86400 BETWEEN 0 AND 120",(e["upstream"],domain,qtype,e["ts"],e["ts"])).fetchall()
-        if len(candidates)==1:
-            db.execute("UPDATE dnsproxy_upstream_attempts SET status='failed',last_seen=?,duration_ms=?,error=? WHERE id=?",(e["ts"],e["duration_ms"],e["error"],candidates[0][0]))
-        else:
-            db.execute("INSERT OR IGNORE INTO dnsproxy_upstream_attempts(identity,first_seen,last_seen,domain,qtype,upstream,protocol,status,duration_ms,error) VALUES(?,?,?,?,?,?,?,?,?,?)",(f"failure:{offset}",e["ts"],e["ts"],domain,qtype,e["upstream"],e["protocol"],"failed_unmatched",e["duration_ms"],e["error"]))
-            diagnostic(db,"dnsproxy","ambiguous_or_orphan_failure")
-    elif event in ("exchange successfully finished","response received","resolved"):
-        diagnostic(db,"dnsproxy","unmatched_completion")
+        question=fields.get("question","").replace(chr(92)+"t",chr(9))
+        match=re.search(r";([^\s]+)\s+IN\s+(\w+)",question)
+        if not match:
+            diagnostic(db,"dnsproxy","completion_without_question")
+            return
+        domain,qtype=match.group(1).rstrip("."),match.group(2)
+        status="success" if event=="exchange successfully finished" else "failed"
+        db.execute("INSERT OR IGNORE INTO dnsproxy_upstream_attempts(identity,first_seen,last_seen,domain,qtype,upstream,protocol,status,duration_ms,error) VALUES(?,?,?,?,?,?,?,?,?,?)",(f"completion:{offset}",e["ts"],e["ts"],domain,qtype,e["upstream"],e["protocol"],status,e["duration_ms"],e["error"]))
+    elif event in ("sending request","response received","resolved"):
+        pass
     elif event in ("in","out","dialing","connection succeeded","no hosts records found","handling new udp packet"):
         pass
     else:diagnostic(db,"dnsproxy","ignored_event")
