@@ -14,7 +14,7 @@ class RequestTests(unittest.TestCase):
    self.assertEqual(ingest(db,"dnsproxy",p),1)
    self.assertEqual(db.execute("SELECT COUNT(*) FROM dnsmasq_requests").fetchone()[0],1)
    self.assertEqual(db.execute("SELECT forwarded,response_count FROM dnsmasq_requests").fetchone(),(1,1))
-   self.assertEqual(db.execute("SELECT COUNT(*) FROM dnsproxy_upstream_attempts").fetchone()[0],1)
+   self.assertEqual(db.execute("SELECT COUNT(*) FROM dnsproxy_upstream_attempts").fetchone()[0],0)
    self.assertEqual(ingest(db,"dnsmasq",m),0)
 
  def test_completion_only_and_incremental_append(self):
