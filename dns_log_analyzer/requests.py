@@ -62,7 +62,7 @@ def process_dnsmasq(db,e,offset,generation=0):
     if e["event"]=="forwarded":
         db.execute("UPDATE dnsmasq_requests SET last_seen=?,forwarded=1,upstream=?,state='forwarded' WHERE id=?",(e["ts"],e["upstream"],rid))
     elif e["event"]=="cached":
-        db.execute("UPDATE dnsmasq_requests SET last_seen=?,cache_seen=1 WHERE id=?",(e["ts"],rid))
+        db.execute("UPDATE dnsmasq_requests SET last_seen=?,cache_seen=1,response_count=CASE WHEN response_count=0 THEN 1 ELSE response_count END,result=COALESCE(?,result),state='answered' WHERE id=?",(e["ts"],e["result"],rid))
     elif e["event"] in ("reply","config"):
         db.execute("UPDATE dnsmasq_requests SET last_seen=?,response_count=response_count+1,result=COALESCE(?,result),state='answered' WHERE id=?",(e["ts"],e["result"],rid))
     else:diagnostic(db,"dnsmasq","other_event")
@@ -82,7 +82,31 @@ def process_dnsproxy(db,e,offset,generation=0):
         domain,qtype=match.group(1).rstrip("."),match.group(2)
         status="success" if event=="exchange successfully finished" else "failed"
         db.execute("INSERT OR IGNORE INTO dnsproxy_upstream_attempts(identity,first_seen,last_seen,domain,qtype,upstream,protocol,status,duration_ms,error) VALUES(?,?,?,?,?,?,?,?,?,?)",(f"g:{generation}:completion:{offset}",e["ts"],e["ts"],domain,qtype,e["upstream"],e["protocol"],status,e["duration_ms"],e["error"]))
-    elif event in ("sending request","response received","resolved"):
+    elif event=="upstream exchange completed":
+        status="success" if e["result"]=="ok" else "failed"
+        elapsed=e["duration_ms"]
+        if elapsed is None or elapsed < 0:
+            return diagnostic(db,"dnsproxy","completion_invalid_duration")
+        start=(dt.datetime.fromisoformat(e["ts"])-dt.timedelta(milliseconds=elapsed)).isoformat()
+        error=None if status=="success" else e["result"]
+        db.execute("INSERT OR IGNORE INTO dnsproxy_upstream_attempts(identity,first_seen,last_seen,domain,qtype,upstream,protocol,status,duration_ms,error) VALUES(?,?,?,?,?,?,?,?,?,?)",(f"g:{generation}:exact:{offset}",start,e["ts"],e["domain"].rstrip(".") if e["domain"] else None,e["qtype"],e["upstream"],e["protocol"],status,elapsed,error))
+    elif event=="sending request":
+        if e["ts"] >= "2026-10-14T02:43:17": return
+        db.execute("INSERT OR IGNORE INTO dnsproxy_upstream_attempts(identity,first_seen,last_seen,domain,qtype,upstream,protocol,status) VALUES(?,?,?,?,?,?,?,?)",(f"g:{generation}:send:{offset}",e["ts"],e["ts"],e["domain"],e["qtype"],e["upstream"],e["protocol"],"sent"))
+    elif event=="response received":
+        if e["ts"] >= "2026-10-14T02:43:17": return
+        rows=db.execute("SELECT id,first_seen FROM dnsproxy_upstream_attempts WHERE upstream=? AND protocol=? AND status='sent' AND first_seen BETWEEN ? AND ? ORDER BY id LIMIT 3",(e["upstream"],e["protocol"],(dt.datetime.fromisoformat(e["ts"])-dt.timedelta(seconds=4)).isoformat(),e["ts"])).fetchall()
+        if len(rows)==1:
+            rid,started=rows[0]
+            try: elapsed=(dt.datetime.fromisoformat(e["ts"])-dt.datetime.fromisoformat(started)).total_seconds()*1000
+            except ValueError: elapsed=-1
+            if 0<=elapsed<=4000:
+                db.execute("UPDATE dnsproxy_upstream_attempts SET last_seen=?,status=?,duration_ms=? WHERE id=?",(e["ts"],"success" if e["result"]=="ok" else "failed",elapsed,rid))
+            else:diagnostic(db,"dnsproxy","response_outside_window")
+        elif len(rows)>1:
+            diagnostic(db,"dnsproxy","ambiguous_upstream_response")
+        else:diagnostic(db,"dnsproxy","orphan_upstream_response")
+    elif event=="resolved":
         pass
     elif event in ("in","out","dialing","connection succeeded","no hosts records found","handling new udp packet"):
         pass

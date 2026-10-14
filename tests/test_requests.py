@@ -14,7 +14,7 @@ class RequestTests(unittest.TestCase):
    self.assertEqual(ingest(db,"dnsproxy",p),1)
    self.assertEqual(db.execute("SELECT COUNT(*) FROM dnsmasq_requests").fetchone()[0],1)
    self.assertEqual(db.execute("SELECT forwarded,response_count FROM dnsmasq_requests").fetchone(),(1,1))
-   self.assertEqual(db.execute("SELECT COUNT(*) FROM dnsproxy_upstream_attempts").fetchone()[0],0)
+   self.assertEqual(db.execute("SELECT status FROM dnsproxy_upstream_attempts").fetchone()[0],"sent")
    self.assertEqual(ingest(db,"dnsmasq",m),0)
 
  def test_completion_only_and_incremental_append(self):
@@ -25,15 +25,16 @@ class RequestTests(unittest.TestCase):
    failure='2026/10/13 23:00:05.690634 ERROR exchange failed prefix=dnsproxy upstream=tcp://9.9.9.9:53 question=";bad.example.\\tIN\\t HTTPS" duration=12.3s err="EOF"\n'
    p.write_text(sent)
    self.assertEqual(ingest(db,"dnsproxy",p),1)
-   self.assertEqual(db.execute("SELECT COUNT(*) FROM dnsproxy_upstream_attempts").fetchone()[0],0)
+   self.assertEqual(db.execute("SELECT status FROM dnsproxy_upstream_attempts").fetchone()[0],"sent")
    with p.open("a") as stream:stream.write(success+failure)
    self.assertEqual(ingest(db,"dnsproxy",p),2)
    self.assertEqual(ingest(db,"dnsproxy",p),0)
    rows=db.execute("SELECT domain,qtype,status,duration_ms FROM dnsproxy_upstream_attempts ORDER BY id").fetchall()
-   self.assertEqual(rows[0][:3],("example.com","A","success"))
-   self.assertAlmostEqual(rows[0][3],988.434279)
-   self.assertEqual(rows[1][:3],("bad.example","HTTPS","failed"))
-   self.assertAlmostEqual(rows[1][3],12300)
+   self.assertEqual(rows[0][2],"sent")
+   self.assertEqual(rows[1][:3],("example.com","A","success"))
+   self.assertAlmostEqual(rows[1][3],988.434279)
+   self.assertEqual(rows[2][:3],("bad.example","HTTPS","failed"))
+   self.assertAlmostEqual(rows[2][3],12300)
  def test_copytruncate_and_concurrency(self):
   with tempfile.TemporaryDirectory() as d:
    p=Path(d)/"proxy.log";db=open_db(str(Path(d)/"test.db"))
@@ -61,4 +62,18 @@ class RequestTests(unittest.TestCase):
    self.assertEqual(names,{'first.example','missed.example','new.example'})
    self.assertEqual(ingest(db,'dnsproxy',p),0)
    self.assertEqual(db.execute('SELECT generation FROM ingest_checkpoints WHERE source=?',('dnsproxy',)).fetchone()[0],1)
+ def test_exact_upstream_completion(self):
+  with tempfile.TemporaryDirectory() as d:
+   p=Path(d)/"proxy.log";db=open_db(str(Path(d)/"test.db"))
+   p.write_text("2026/10/14 09:04:20.845393 DEBUG upstream exchange completed addr=1.1.1.1:53 proto=udp qtype=A qname=example.com. id=63214 duration=172.789081ms status=ok\n")
+   self.assertEqual(ingest(db,"dnsproxy",p),1)
+   self.assertEqual(db.execute("SELECT domain,qtype,upstream,status,round(duration_ms,3) FROM dnsproxy_upstream_attempts").fetchone(),("example.com","A","1.1.1.1:53","success",172.789))
+
+ def test_cached_result_marks_complete(self):
+  with tempfile.TemporaryDirectory() as d:
+   p=Path(d)/"masq.log";db=open_db(str(Path(d)/"test.db"))
+   p.write_text("Oct 14 08:41:04 dnsmasq[12]: 123 192.168.0.59/20333 query[AAAA] example.com from 192.168.0.59\nOct 14 08:41:04 dnsmasq[12]: 123 192.168.0.59/20333 cached example.com is NODATA-IPv6\n")
+   self.assertEqual(ingest(db,"dnsmasq",p),2)
+   self.assertEqual(db.execute("SELECT state,cache_seen,response_count,result FROM dnsmasq_requests").fetchone(),("answered",1,1,"NODATA-IPv6"))
+
 if __name__=="__main__":unittest.main()
