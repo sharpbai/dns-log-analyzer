@@ -1,103 +1,86 @@
 #!/usr/bin/env python3
-"""dnsmasq DNS 查询汇总（SQLite 只读）。默认统计今天截至当前。"""
-import argparse
-import sqlite3
-from datetime import datetime, timedelta
+import argparse,json,sqlite3,sys
 from pathlib import Path
-
-DEFAULT_DB = "/var/lib/dns-log-analyzer/requests.sqlite3"
-
-def summarize(db, start, end):
-    total, duplicate, success, failure = db.execute("""
-        SELECT count(*),
-          coalesce(sum(CASE WHEN result='duplicate' THEN 1 ELSE 0 END),0),
-          coalesce(sum(CASE WHEN state='answered'
-            AND (result IS NULL OR result NOT IN ('SERVFAIL','REFUSED','duplicate'))
-            THEN 1 ELSE 0 END),0),
-          coalesce(sum(CASE WHEN result IN ('SERVFAIL','REFUSED') THEN 1 ELSE 0 END),0)
-        FROM dnsmasq_requests WHERE first_seen>=? AND first_seen<?
-    """, (start, end)).fetchone()
-    unconfirmed = total - duplicate - success - failure
-    confirmed = success + failure
-    return {
-        "total": total, "success": success, "failure": failure,
-        "duplicate": duplicate, "unconfirmed": unconfirmed,
-        "confirmed_success_rate": success / confirmed * 100 if confirmed else None,
-        "overall_success_rate": success / total * 100 if total else None,
-    }
-
-def resolve_window(period, days, start, end, now):
-    if (start or end) and (period or days):
-        raise ValueError("自定义 --start/--end 不可与快捷周期或 --days 同时使用")
-    if days is not None and period:
-        raise ValueError("--days 不可与快捷周期同时使用")
-    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    if start or end:
-        begin = datetime.fromisoformat(start) if start else today
-        finish = datetime.fromisoformat(end) if end else now
-    elif days is not None:
-        if days < 1:
-            raise ValueError("--days 必须大于等于 1")
-        begin, finish = now - timedelta(days=days), now
-    elif period == "yesterday":
-        begin, finish = today - timedelta(days=1), today
-    elif period == "week":
-        begin, finish = today - timedelta(days=today.weekday()), now
-    elif period == "month":
-        begin, finish = today.replace(day=1), now
-    elif period == "last7":
-        begin, finish = now - timedelta(days=7), now
-    else:
-        begin, finish = today, now
-    if begin >= finish:
-        raise ValueError("开始时间必须早于结束时间")
-    return begin.isoformat(timespec="seconds"), finish.isoformat(timespec="seconds")
-
+from datetime import datetime,timedelta
+def period(a):
+ now=datetime.now();day=now.replace(hour=0,minute=0,second=0,microsecond=0)
+ if (a.start or a.end) and (a.period or a.days):raise ValueError("时间参数冲突")
+ if a.days is not None and a.period:raise ValueError("时间参数冲突")
+ if a.days is not None:
+  if a.days<1:raise ValueError("days must be positive")
+  x,y=now-timedelta(days=a.days),now
+ elif a.start or a.end:x,y=datetime.fromisoformat(a.start) if a.start else day,datetime.fromisoformat(a.end) if a.end else now
+ elif a.period=="yesterday":x,y=day-timedelta(days=1),day
+ elif a.period=="week":x,y=day-timedelta(days=day.weekday()),now
+ elif a.period=="month":x,y=day.replace(day=1),now
+ elif a.period=="last7":x,y=now-timedelta(days=7),now
+ else:x,y=day,now
+ if x>=y:raise ValueError("start must precede end")
+ return x.isoformat(timespec="seconds"),y.isoformat(timespec="seconds")
+def pct(x,n):return round(100*x/n,3) if n else None
+def quant(x,p):return round(sorted(x)[int((len(x)-1)*p)],1) if x else None
+def summarize(db,start,end):
+ t,dup,ok,bad=db.execute("""SELECT count(*),coalesce(sum(result='duplicate'),0),coalesce(sum(state='answered' AND (result IS NULL OR result NOT IN ('SERVFAIL','REFUSED','duplicate'))),0),coalesce(sum(result IN ('SERVFAIL','REFUSED')),0) FROM dnsmasq_requests WHERE first_seen>=? AND first_seen<?""",(start,end)).fetchone()
+ return dict(total=t,success=ok,failure=bad,duplicate=dup,unconfirmed=t-dup-ok-bad,confirmed_success_rate=100*ok/(ok+bad) if ok+bad else None,overall_success_rate=100*ok/t if t else None)
+def collect(db,a,b):
+ t,dup,ok,bad,cache=db.execute("""SELECT count(*),sum(result='duplicate'),sum(state='answered' AND (result IS NULL OR result NOT IN ('SERVFAIL','REFUSED','duplicate'))),sum(result IN ('SERVFAIL','REFUSED')),sum(cache_seen=1 AND forwarded=0) FROM dnsmasq_requests WHERE first_seen>=? AND first_seen<?""",(a,b)).fetchone()
+ t,dup,ok,bad,cache=[v or 0 for v in (t,dup,ok,bad,cache)]
+ ups=[]
+ all_durations=[]
+ bins=[50,100,150,200,250,300,400,500,700,1000,1500,3000]
+ histogram=[0]*13
+ for name,n,failed in db.execute("""SELECT upstream,count(*),sum(status='failed') FROM dnsproxy_upstream_attempts WHERE identity LIKE '%:exact:%' AND first_seen>=? AND first_seen<? GROUP BY upstream ORDER BY count(*) DESC""",(a,b)):
+  durations=[v[0] for v in db.execute("""SELECT duration_ms FROM dnsproxy_upstream_attempts WHERE identity LIKE '%:exact:%' AND first_seen>=? AND first_seen<? AND upstream=? AND status='success' AND duration_ms IS NOT NULL""",(a,b,name))]
+  ups.append(dict(name=name,total=n,failed=failed or 0,success_rate=pct(n-(failed or 0),n),p50=quant(durations,.5),p95=quant(durations,.95),p99=quant(durations,.99),over_3s=sum(v>=3000 for v in durations)))
+  all_durations.extend(durations)
+  for duration in durations:
+   for i,limit in enumerate(bins):
+    if duration<limit:
+     histogram[i]+=1
+     break
+   else:histogram[-1]+=1
+ packet=db.execute("SELECT count(*) FROM dnsproxy_packet_events WHERE ts>=? AND ts<?",(a,b)).fetchone()[0]
+ cached=db.execute("SELECT count(*) FROM dnsproxy_cache_events WHERE ts>=? AND ts<?",(a,b)).fetchone()[0]
+ return dict(window=dict(start=a,end=b),dnsmasq=dict(total=t,success=ok,failed=bad,duplicate=dup,unconfirmed=t-dup-ok-bad,confirmed_success_rate=pct(ok,ok+bad),overall_success_rate=pct(ok,t),cache_hits=cache,cache_hit_rate=pct(cache,t)),dnsproxy=dict(packet_events=packet,cache_events=cached,cache_event_ratio=pct(cached,packet),upstreams=ups,latency_distribution=dict(bounds_ms=bins,counts=histogram,total=len(all_durations),p50=quant(all_durations,.5),p95=quant(all_durations,.95),p99=quant(all_durations,.99),p999=quant(all_durations,.999),ge1s=sum(histogram[10:]),ge3s=histogram[-1],scope="successful upstream exchanges; not deduplicated client requests"),final_latency="N/A: unpaired upstream events"))
+def show(d,color):
+ import shutil
+ def style(s,n):return ("\033["+n+"m"+s+"\033[0m") if color else s
+ m=d["dnsmasq"];p=d["dnsproxy"];width=shutil.get_terminal_size((96,24)).columns
+ compact=width<86
+ def n(v):return f"{v:,}"
+ def rate(v):return "N/A" if v is None else f"{v:.2f}%"
+ def latency(v):return "-" if v is None else f"{v:.0f}"
+ def line(s):print(s)
+ def section(title):line(style("─ "+title+" "+"─"*max(0,(min(width,100)-len(title)-3)),"36"))
+ line(style("DNS SUMMARY  •  local-57  •  READ ONLY","1;36"))
+ line(f"{d['window']['start']}  →  {d['window']['end']}")
+ section("DNSMASQ")
+ line(f"确认成功 {style(rate(m['confirmed_success_rate']),'32'):>8}   全量成功 {style(rate(m['overall_success_rate']),'32'):>8}   缓存命中 {rate(m['cache_hit_rate'])}")
+ line(f"总查询 {n(m['total'])}  成功 {n(m['success'])}  失败 {n(m['failed'])}  未确认 {n(m['unconfirmed'])}  重复 {n(m['duplicate'])}")
+ section("DNSPROXY")
+ line(f"请求事件 {n(p['packet_events'])}  缓存事件 {n(p['cache_events'])}  事件比例 {rate(p['cache_event_ratio'])}")
+ section("UPSTREAM / SUCCESSFUL EXCHANGES (ms)")
+ if compact:
+  line(f"{'UPSTREAM':<23} {'OK%':>8} {'P50':>6} {'P95':>6} {'P99':>6} {'≥3s':>5}")
+ else:
+  line(f"{'UPSTREAM':<37} {'OK%':>9} {'P50':>7} {'P95':>7} {'P99':>7} {'≥3s':>6}")
+ for u in p['upstreams']:
+  name=u['name'].replace("https://","DoH ").replace(":443/dns-query","").replace(":53"," UDP")
+  if compact:name=name.replace("cloudflare-dns.com","Cloudflare").replace("dns.google","Google")
+  if compact:line(f"{name[:23]:<23} {rate(u['success_rate']):>8} {latency(u['p50']):>6} {latency(u['p95']):>6} {latency(u['p99']):>6} {u['over_3s']:>5}")
+  else:line(f"{name[:37]:<37} {rate(u['success_rate']):>9} {latency(u['p50']):>7} {latency(u['p95']):>7} {latency(u['p99']):>7} {u['over_3s']:>6}")
+ line(style("注：上游耗时非客户端最终耗时；无可靠配对时最终 P99 不统计。","2"))
 def main():
-    parser = argparse.ArgumentParser(
-        prog="dns-summary",
-        description="dnsmasq 查询统计：确认成功率与全量完成成功率，保留重复和未确认分类。",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""快捷用法：
-  dns-summary                  今天 00:00 至现在
-  dns-summary today            今天 00:00 至现在
-  dns-summary yesterday        昨天全天
-  dns-summary week             本周一 00:00 至现在
-  dns-summary month            本月 1 日 00:00 至现在
-  dns-summary last7            最近连续 7×24 小时
-  dns-summary --days 3         最近连续 3×24 小时
-  dns-summary --start 2026-10-15T00:00:00 --end 2026-10-16T00:00:00
-
-成功：有效回答（含 NXDOMAIN/NODATA、缓存完成）
-失败：SERVFAIL/REFUSED
-重复：duplicate，单独统计
-未确认：没有最终完成证据，不视为成功或失败
-确认成功率 = 成功 / (成功 + 失败)
-全量完成成功率 = 成功 / 全部查询
-时间使用 local-57 本地时区；--end 为不含端点。"""
-    )
-    parser.add_argument("period", nargs="?", choices=["today","yesterday","week","month","last7"], help="快捷统计周期")
-    parser.add_argument("--days", type=int, metavar="N", help="最近 N×24 小时")
-    parser.add_argument("--start", help="自定义开始时间，本地 ISO 格式（含）")
-    parser.add_argument("--end", help="自定义结束时间，本地 ISO 格式（不含）")
-    parser.add_argument("--db", default=DEFAULT_DB, help="SQLite 数据库路径")
-    args = parser.parse_args()
-    try:
-        start, end = resolve_window(args.period, args.days, args.start, args.end, datetime.now())
-        uri = Path(args.db).resolve().as_uri() + "?mode=ro"
-        with sqlite3.connect(uri, uri=True) as db:
-            result = summarize(db, start, end)
-    except (ValueError, sqlite3.Error, OSError) as exc:
-        parser.error(str(exc))
-    print(f"dnsmasq  {start} <= first_seen < {end}")
-    for key, title in (("total","查询总数"),("success","成功"),("failure","明确失败"),("duplicate","重复请求"),("unconfirmed","未确认完成")):
-        print(f"{title}: {result[key]:,}")
-    for key, title, denominator in (
-        ("confirmed_success_rate","确认成功率","成功 + 明确失败"),
-        ("overall_success_rate","全量完成成功率","查询总数")
-    ):
-        value = result[key]
-        print(f"{title}: {value:.4f}%  (分母：{denominator})" if value is not None else f"{title}: N/A")
-
-if __name__ == "__main__":
-    main()
+ p=argparse.ArgumentParser(prog="dns-summary",description="DNS 只读综合仪表盘；默认终端 TUI，不动态刷新")
+ p.add_argument("period",nargs="?",choices=["today","yesterday","week","month","last7"])
+ p.add_argument("--days",type=int);p.add_argument("--start");p.add_argument("--end")
+ p.add_argument("--db",default="/var/lib/dns-log-analyzer/requests.sqlite3")
+ g=p.add_mutually_exclusive_group();g.add_argument("--plain",action="store_true");g.add_argument("--json",action="store_true")
+ a=p.parse_args()
+ try:
+  x,y=period(a)
+  with sqlite3.connect(Path(a.db).resolve().as_uri()+"?mode=ro",uri=True) as db:d=collect(db,x,y)
+ except (ValueError,sqlite3.Error,OSError) as e:p.error(str(e))
+ if a.json:print(json.dumps(d,ensure_ascii=False,indent=2))
+ else:show(d,sys.stdout.isatty() and not a.plain)
+if __name__=="__main__":main()
