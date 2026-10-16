@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh DNS snapshots
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=true
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

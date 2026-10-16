@@ -1,0 +1,13 @@
+[Unit]
+Description=DNS stats snapshot collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/dns-stat-collect.py
+TimeoutStartSec=300
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/dns-stat/current/data
+ProtectHome=yes
