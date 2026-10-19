@@ -13,9 +13,11 @@ class ProxyIncrementalTests(unittest.TestCase):
                    ("g:1:send:2","2026-10-19T10:01:02","google","sent",None))
         self.assertEqual(db.execute("SELECT total FROM dns_hourly_aggregates WHERE dimension=\x27attempts:google\x27").fetchone()[0],1)
         self.assertEqual(db.execute("SELECT total FROM dns_latency_bins WHERE bin=1").fetchone()[0],1)
+        self.assertEqual(db.execute("SELECT total FROM dns_latency_minute_bins WHERE bin=1").fetchone()[0],1)
         db.execute("UPDATE dnsproxy_upstream_attempts SET status=\x27failed\x27,duration_ms=NULL WHERE id=1")
         self.assertEqual(db.execute("SELECT total FROM dns_hourly_aggregates WHERE dimension=\x27failed:google\x27").fetchone()[0],1)
         self.assertEqual(db.execute("SELECT total FROM dns_latency_bins WHERE bin=1").fetchone()[0],0)
+        self.assertEqual(db.execute("SELECT total FROM dns_latency_minute_bins WHERE bin=1").fetchone()[0],0)
         db.close()
 
     def test_packet_cache_insert_counts(self):

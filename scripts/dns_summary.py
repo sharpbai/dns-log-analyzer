@@ -153,6 +153,11 @@ def collect_aggregate_only(db,a,b):
  for name,bin_index,n in db.execute(
   "SELECT upstream,bin,sum(total) FROM dns_latency_bins WHERE hour>=? AND hour<? GROUP BY upstream,bin",(hourly_start.isoformat(timespec="seconds"),hourly_end.isoformat(timespec="seconds"))) :
   upstream.setdefault(name,[0]*13)[int(bin_index)]+=int(n)
+ # Minute-aligned windows use minute latency bins; never fall back to detail.
+ if minute_window:
+  for name,bin_index,n in db.execute(
+   "SELECT upstream,bin,sum(total) FROM dns_latency_minute_bins WHERE minute>=? AND minute<? GROUP BY upstream,bin",(a,b)):
+   upstream.setdefault(name,[0]*13)[int(bin_index)]+=int(n)
  names.update(upstream)
  ups=[]
  all_counts=[0]*13
@@ -176,7 +181,7 @@ def collect_aggregate_only(db,a,b):
     p50=quant_hist(bounds,all_counts,.5),p95=quant_hist(bounds,all_counts,.95),
     p99=quant_hist(bounds,all_counts,.99),p999=quant_hist(bounds,all_counts,.999),
     ge1s=sum(all_counts[10:]),ge3s=all_counts[-1],
-    scope="completed-hour upstream aggregates; current-hour latency excluded"),
+    scope="successful upstream exchanges; minute bins for short windows, completed-hour bins for historical windows"),
    final_latency="N/A: unpaired upstream events"))
 
 def collect(db,a,b):

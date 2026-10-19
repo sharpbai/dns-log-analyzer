@@ -50,6 +50,9 @@ def install_dnsproxy_triggers(db):
       source TEXT,hour TEXT,dimension TEXT,total INTEGER,updated_at TEXT,
       PRIMARY KEY(source,hour,dimension));
     """)
+    db.execute("""CREATE TABLE IF NOT EXISTS dns_latency_minute_bins(
+      minute TEXT NOT NULL,upstream TEXT NOT NULL,bin INTEGER NOT NULL,total INTEGER NOT NULL,
+      PRIMARY KEY(minute,upstream,bin))""")
     # Histogram bins are individually additive in SQL; no historical rescan.
     for action in ("INSERT","UPDATE"):
         changes=(("NEW",1),) if action=="INSERT" else (("OLD",-1),("NEW",1))
@@ -76,6 +79,10 @@ def install_dnsproxy_triggers(db):
                 lower=f"{row}.duration_ms>={bounds[i-1]}" if i else "1"
                 upper=f"{row}.duration_ms<{bounds[i]}" if i<12 else "1"
                 condition=f"({exact} AND {row}.status=\x27success\x27 AND {row}.duration_ms IS NOT NULL AND {lower} AND {upper})"
+                statements.append(f"""INSERT INTO dns_latency_minute_bins
+                  VALUES({minute},{upstream},{i},({sign})*({condition}))
+                  ON CONFLICT(minute,upstream,bin)
+                  DO UPDATE SET total=total+excluded.total;""")
                 # Maintain per-bin counters in a normalized table; JSON snapshots can be
                 # assembled from these rows without reading detail.
                 statements.append(f"""INSERT INTO dns_latency_bins
@@ -89,6 +96,9 @@ def install_dnsproxy_triggers(db):
     CREATE TABLE IF NOT EXISTS dns_latency_bins(
       hour TEXT NOT NULL,upstream TEXT NOT NULL,bin INTEGER NOT NULL,total INTEGER NOT NULL,
       PRIMARY KEY(hour,upstream,bin));
+    CREATE TABLE IF NOT EXISTS dns_latency_minute_bins(
+      minute TEXT NOT NULL,upstream TEXT NOT NULL,bin INTEGER NOT NULL,total INTEGER NOT NULL,
+      PRIMARY KEY(minute,upstream,bin));
     """)
     db.commit()
 
