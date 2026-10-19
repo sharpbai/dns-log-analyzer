@@ -130,7 +130,7 @@ def collect(db,a,b):
  histogram=[0]*13
  # Exact completions only. Histograms merge by adding counts; quantiles are
  # bucket estimates and never claim precision within an individual bucket.
- rows=db.execute("""SELECT first_seen,upstream,status,duration_ms FROM dnsproxy_upstream_attempts WHERE identity LIKE '%:exact:%' AND first_seen>=? AND first_seen<?""",(a,b)).fetchall()
+ rows=db.execute("""SELECT first_seen,upstream,status,duration_ms FROM dnsproxy_upstream_attempts WHERE identity LIKE '%:exact:%' AND first_seen>=? AND first_seen<?""",(a,b))
  by_up={}
  for ts,name,status,duration in rows:
   item=by_up.setdefault(name,[0,0,[0]*(len(bins)+1)]);item[0]+=1;item[1]+=int(status=='failed')
