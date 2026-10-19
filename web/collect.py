@@ -4,7 +4,7 @@ from datetime import datetime,timezone
 from pathlib import Path
 base=Path("/srv/dns-stat/current/data")
 ssh=["/usr/bin/ssh","-i","/etc/dns-stat/id_ed25519","-o","BatchMode=yes","-o","StrictHostKeyChecking=yes","-o","UserKnownHostsFile=/etc/dns-stat/known_hosts","-o","ConnectTimeout=5","dnsstat@192.168.0.57"]
-periods={"today":60,"yesterday":3600,"week":3600,"month":3600,"last7":3600}
+periods={"minute1":60,"minute5":60,"today":60,"yesterday":3600,"week":3600,"month":3600,"last7":3600}
 for period,interval in periods.items():
  target=base/(period+".json")
  if target.exists() and time.time()-target.stat().st_mtime<interval:continue

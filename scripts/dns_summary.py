@@ -10,6 +10,10 @@ def period(a):
   if a.days<1:raise ValueError("days must be positive")
   x,y=now-timedelta(days=a.days),now
  elif a.start or a.end:x,y=datetime.fromisoformat(a.start) if a.start else day,datetime.fromisoformat(a.end) if a.end else now
+ elif a.period in ("minute1","minute5"):
+  step=1 if a.period=="minute1" else 5
+  y=now.replace(minute=(now.minute//step)*step,second=0,microsecond=0)
+  x=y-timedelta(minutes=step)
  elif a.period=="yesterday":x,y=day-timedelta(days=1),day
  elif a.period=="week":x,y=day-timedelta(days=day.weekday()),now
  elif a.period=="month":x,y=day.replace(day=1),now
@@ -124,15 +128,18 @@ def collect_aggregate_only(db,a,b):
  """Return only existing aggregate rows; never inspect request-level tables."""
  from datetime import datetime,timedelta
  start,end=datetime.fromisoformat(a),datetime.fromisoformat(b)
+ minute_window=(end-start).total_seconds()<=300
+ hourly_start=(start+timedelta(hours=1)).replace(minute=0,second=0,microsecond=0) if (start.minute or start.second) else start
+ hourly_end=end.replace(minute=0,second=0,microsecond=0)
  bounds=[50,100,150,200,250,300,400,500,700,1000,1500,3000]
  metrics={}
  for source,dimension,n in db.execute(
   "SELECT source,dimension,sum(total) FROM dns_hourly_aggregates WHERE hour>=? AND hour<? GROUP BY source,dimension",
-  (a,b)):
+  (hourly_start.isoformat(timespec="seconds"),hourly_end.isoformat(timespec="seconds"))) :
   metrics[(source,dimension)]=int(n)
  # Minute rows only for the currently unfinished hour. Do not double count
  # completed hourly buckets or require a historical progress marker.
- tail_start=end.replace(minute=0,second=0,microsecond=0)
+ tail_start=start if minute_window else end.replace(minute=0,second=0,microsecond=0)
  if tail_start<start:tail_start=start
  for source,dimension,n in db.execute(
   "SELECT source,dimension,sum(total) FROM dns_minute_aggregates WHERE minute>=? AND minute<? GROUP BY source,dimension",
@@ -144,7 +151,7 @@ def collect_aggregate_only(db,a,b):
    names.add(dimension.split(":",1)[1])
  upstream={name:[0]*13 for name in names}
  for name,bin_index,n in db.execute(
-  "SELECT upstream,bin,sum(total) FROM dns_latency_bins WHERE hour>=? AND hour<? GROUP BY upstream,bin",(a,b)):
+  "SELECT upstream,bin,sum(total) FROM dns_latency_bins WHERE hour>=? AND hour<? GROUP BY upstream,bin",(hourly_start.isoformat(timespec="seconds"),hourly_end.isoformat(timespec="seconds"))) :
   upstream.setdefault(name,[0]*13)[int(bin_index)]+=int(n)
  names.update(upstream)
  ups=[]
@@ -226,7 +233,7 @@ def show(d,color):
  line(style("注：上游耗时非客户端最终耗时；无可靠配对时最终 P99 不统计。","2"))
 def main():
  p=argparse.ArgumentParser(prog="dns-summary",description="DNS 只读综合仪表盘；默认终端 TUI，不动态刷新")
- p.add_argument("period",nargs="?",choices=["today","yesterday","week","month","last7"])
+ p.add_argument("period",nargs="?",choices=["minute1","minute5","today","yesterday","week","month","last7"])
  p.add_argument("--days",type=int);p.add_argument("--start");p.add_argument("--end")
  p.add_argument("--aggregate-only",action="store_true");p.add_argument("--db",default="/var/lib/dns-log-analyzer/requests.sqlite3")
  g=p.add_mutually_exclusive_group();g.add_argument("--plain",action="store_true");g.add_argument("--json",action="store_true")
