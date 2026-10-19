@@ -1,0 +1,15 @@
+[Unit]
+Description=DNS statistics historical backfill (local maintenance)
+
+[Service]
+EnvironmentFile=/etc/dns-stat/backfill.conf
+Type=oneshot
+CPUQuota=50%
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+ExecStart=/usr/bin/python3 /srv/dns-log-analyzer/scripts/backfill_aggregates_db.py --db /var/lib/dns-log-analyzer/requests.sqlite3 --start ${BACKFILL_START} --end ${BACKFILL_END}
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/dns-log-analyzer

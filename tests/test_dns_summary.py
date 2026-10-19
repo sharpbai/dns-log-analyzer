@@ -2,30 +2,24 @@ import importlib.util
 import sqlite3
 import unittest
 from pathlib import Path
-
-spec = importlib.util.spec_from_file_location(
-    "dnsmasq_summary", Path(__file__).resolve().parents[1] / "scripts" / "dns_summary.py"
-)
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-
+spec=importlib.util.spec_from_file_location("summary",Path(__file__).resolve().parents[1]/"scripts"/"dns_summary.py")
+mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
 class SummaryTests(unittest.TestCase):
-    def test_disjoint_classes_and_denominators(self):
-        db = sqlite3.connect(":memory:")
-        db.execute("CREATE TABLE dnsmasq_requests(first_seen TEXT,state TEXT,result TEXT)")
-        rows = [
-            ("2026-10-16T01:00:00","answered","1.2.3.4"),
-            ("2026-10-16T01:00:00","answered",None),
-            ("2026-10-16T01:00:00","answered","NXDOMAIN"),
-            ("2026-10-16T01:00:00","answered","SERVFAIL"),
-            ("2026-10-16T01:00:00","answered","duplicate"),
-            ("2026-10-16T01:00:00","forwarded",None),
-        ]
-        db.executemany("INSERT INTO dnsmasq_requests VALUES(?,?,?)",rows)
-        result = mod.summarize(db,"2026-10-16T00:00:00","2026-10-17T00:00:00")
-        self.assertEqual([result[k] for k in ("total","success","failure","duplicate","unconfirmed")],[6,3,1,1,1])
-        self.assertEqual(result["confirmed_success_rate"],75)
-        self.assertEqual(result["overall_success_rate"],50)
-
-if __name__ == "__main__":
-    unittest.main()
+    def setUp(self):
+        self.db=sqlite3.connect(":memory:")
+        self.db.execute("CREATE TABLE smartdns_requests(ts TEXT,duration_ms INTEGER)")
+        self.db.execute("CREATE TABLE dnsproxy_upstream_attempts(first_seen TEXT,identity TEXT,upstream TEXT,status TEXT,duration_ms REAL)")
+        self.db.execute("CREATE TABLE dnsproxy_packet_events(ts TEXT)")
+        self.db.execute("CREATE TABLE dnsproxy_cache_events(ts TEXT)")
+    def tearDown(self):self.db.close()
+    def test_zero_ms_estimate(self):
+        self.db.executemany("INSERT INTO smartdns_requests VALUES(?,?)",[("2026-10-16T01:00:00",0),("2026-10-16T01:00:01",0),("2026-10-16T01:00:02",20),("2026-10-17T00:00:00",0)])
+        d=mod.summarize(self.db,"2026-10-16T00:00:00","2026-10-17T00:00:00")
+        self.assertEqual(d["total"],3);self.assertEqual(d["cache_hits"],2);self.assertAlmostEqual(d["cache_hit_rate"],66.667)
+    def test_upstream_histogram(self):
+        self.db.execute("INSERT INTO smartdns_requests VALUES('2026-10-16T00:00:00',0)")
+        self.db.execute("INSERT INTO dnsproxy_upstream_attempts VALUES('2026-10-16T00:00:00','g:1:exact:1','google','success',45)")
+        d=mod.collect(self.db,"2026-10-16T00:00:00","2026-10-17T00:00:00")
+        self.assertEqual(d["smartdns"]["total"],1)
+        self.assertEqual(d["dnsproxy"]["latency_distribution"]["total"],1)
+if __name__=="__main__":unittest.main()

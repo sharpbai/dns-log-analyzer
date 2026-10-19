@@ -150,7 +150,7 @@ def run(db,paths,interval=30,debounce=0.15,once=False):
 def main():
     p=argparse.ArgumentParser(description="Event-driven DNS log ingestion")
     p.add_argument("--db",default="./dns-requests.sqlite3")
-    p.add_argument("--dnsmasq",default="/var/log/dnsmasq.log")
+    p.add_argument("--smartdns",default="/var/log/smartdns/smartdns-audit.log")
     p.add_argument("--dnsproxy",default="/var/log/dnsproxy.log")
     p.add_argument("--reconcile-interval",type=float,default=30)
     p.add_argument("--debounce",type=float,default=0.15)
@@ -160,7 +160,7 @@ def main():
         p.error("interval must be positive and debounce nonnegative")
     db=open_db(a.db)
     try:
-        run(db,{"dnsmasq":a.dnsmasq,"dnsproxy":a.dnsproxy},
+        run(db,{"smartdns":a.smartdns,"dnsproxy":a.dnsproxy},
             interval=a.reconcile_interval,debounce=a.debounce,once=a.once)
     finally:
         db.close()

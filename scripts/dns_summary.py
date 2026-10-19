@@ -19,33 +19,136 @@ def period(a):
  return x.isoformat(timespec="seconds"),y.isoformat(timespec="seconds")
 def pct(x,n):return round(100*x/n,3) if n else None
 def quant(x,p):return round(sorted(x)[int((len(x)-1)*p)],1) if x else None
+def quant_hist(bounds,counts,p):
+ total=sum(counts)
+ if not total:return None
+ rank=max(1,int((total-1)*p)+1); seen=0
+ for i,count in enumerate(counts):
+  seen+=count
+  if seen>=rank:return bounds[i] if i<len(bounds) else None
+ return None
 def summarize(db,start,end):
- t,dup,ok,bad=db.execute("""SELECT count(*),coalesce(sum(result='duplicate'),0),coalesce(sum(state='answered' AND (result IS NULL OR result NOT IN ('SERVFAIL','REFUSED','duplicate'))),0),coalesce(sum(result IN ('SERVFAIL','REFUSED')),0) FROM dnsmasq_requests WHERE first_seen>=? AND first_seen<?""",(start,end)).fetchone()
- return dict(total=t,success=ok,failure=bad,duplicate=dup,unconfirmed=t-dup-ok-bad,confirmed_success_rate=100*ok/(ok+bad) if ok+bad else None,overall_success_rate=100*ok/t if t else None)
+ t,cache=db.execute("SELECT count(*),coalesce(sum(duration_ms=0),0) FROM smartdns_requests WHERE ts>=? AND ts<?",(start,end)).fetchone()
+ return dict(total=t,cache_hits=cache,cache_hit_rate=pct(cache,t))
+def collect_aggregated(db, a, b):
+    """Use completed hourly buckets plus at most one current-hour detail tail."""
+    from datetime import datetime
+    start = datetime.fromisoformat(a)
+    end = datetime.fromisoformat(b)
+    if start.minute or start.second or start.microsecond:
+        return None
+    boundary = end.replace(minute=0, second=0, microsecond=0)
+    if boundary < start:
+        return None
+    stop = boundary.isoformat(timespec="seconds")
+    hours = int((boundary - start).total_seconds() // 3600)
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    required = {"dns_hourly_aggregates", "dns_latency_bins", "aggregate_hour_progress"}
+    if not required.issubset(tables) or hours == 0:
+        return None
+    covered = db.execute(
+        "SELECT count(*) FROM aggregate_hour_progress WHERE hour>=? AND hour<?",
+        (a, stop)).fetchone()[0]
+    if covered != hours:
+        return None
+    metrics = {}
+    for source, dimension, count in db.execute(
+        "SELECT source,dimension,sum(total) FROM dns_hourly_aggregates WHERE hour>=? AND hour<? GROUP BY source,dimension",
+        (a, stop)):
+        metrics[(source, dimension)] = int(count)
+    names = set()
+    upstream = {}
+    bounds = [50,100,150,200,250,300,400,500,700,1000,1500,3000]
+    for name, bin_index, amount in db.execute(
+        "SELECT upstream,bin,sum(total) FROM dns_latency_bins WHERE hour>=? AND hour<? GROUP BY upstream,bin",
+        (a, stop)):
+        values = [0]*13
+        values[bin_index] = amount
+        dest = upstream.setdefault(name, [0]*13)
+        for i, value in enumerate(values):
+            dest[i] += value
+        names.add(name)
+    for source, dimension in metrics:
+        if source == "dnsproxy" and dimension.startswith("attempts:"):
+            names.add(dimension[9:])
+    # Only the unfinished tail reads details. Historical hours never do.
+    tail={"total":0,"cache_hits":0}
+    if stop < b:
+        vals=db.execute("SELECT count(*),coalesce(sum(duration_ms=0),0) FROM smartdns_requests WHERE ts>=? AND ts<?",(stop,b)).fetchone()
+        tail=dict(zip(tail,vals))
+        for source, table in (("packet_events","dnsproxy_packet_events"),("cache_events","dnsproxy_cache_events")):
+            if table in tables:
+                metrics[("dnsproxy",source)] = metrics.get(("dnsproxy",source),0) + db.execute(
+                    f"SELECT count(*) FROM {table} WHERE ts>=? AND ts<?",(stop,b)).fetchone()[0]
+        for name, status, duration in db.execute(
+            "SELECT upstream,status,duration_ms FROM dnsproxy_upstream_attempts WHERE first_seen>=? AND first_seen<? AND identity LIKE '%:exact:%'",
+            (stop,b)):
+            name = name or "(unknown)"
+            names.add(name)
+            metrics[("dnsproxy","attempts:"+name)] = metrics.get(("dnsproxy","attempts:"+name),0)+1
+            if status == "failed":
+                metrics[("dnsproxy","failed:"+name)] = metrics.get(("dnsproxy","failed:"+name),0)+1
+            if status == "success" and duration is not None:
+                counts = upstream.setdefault(name,[0]*13)
+                i = next((i for i, limit in enumerate(bounds) if duration < limit),12)
+                counts[i] += 1
+    def m(k):return metrics.get(("smartdns",k),0)+tail.get(k,0)
+    total,cache=m("total"),m("cache_hits")
+    all_counts = [0]*13
+    ups = []
+    for name in names:
+        counts = upstream.get(name,[0]*13)
+        for i,v in enumerate(counts):
+            all_counts[i] += v
+        n = metrics.get(("dnsproxy","attempts:"+name),0)
+        bad = metrics.get(("dnsproxy","failed:"+name),0)
+        ups.append(dict(name=name,total=n,failed=bad,success_rate=pct(n-bad,n),
+                        p50=quant_hist(bounds,counts,.5),p95=quant_hist(bounds,counts,.95),
+                        p99=quant_hist(bounds,counts,.99),over_3s=counts[-1]))
+    ups.sort(key=lambda item:-item["total"])
+    packet = metrics.get(("dnsproxy","packet_events"),0)
+    cached = metrics.get(("dnsproxy","cache_events"),0)
+    return dict(window=dict(start=a,end=b),
+        smartdns=dict(total=total,cache_hits=cache,cache_hit_rate=pct(cache,total),
+          cache_estimate="time=0ms; not an authoritative cache-hit flag"),
+        dnsproxy=dict(packet_events=packet,cache_events=cached,cache_event_ratio=pct(cached,packet),
+          upstreams=ups,latency_distribution=dict(bounds_ms=bounds,counts=all_counts,
+            total=sum(all_counts),p50=quant_hist(bounds,all_counts,.5),
+            p95=quant_hist(bounds,all_counts,.95),p99=quant_hist(bounds,all_counts,.99),
+            p999=quant_hist(bounds,all_counts,.999),ge1s=sum(all_counts[10:]),
+            ge3s=all_counts[-1],
+            scope="successful upstream exchanges; not deduplicated client requests; bucket-estimated quantiles"),
+          final_latency="N/A: unpaired upstream events"))
+
 def collect(db,a,b):
- t,dup,ok,bad,cache=db.execute("""SELECT count(*),sum(result='duplicate'),sum(state='answered' AND (result IS NULL OR result NOT IN ('SERVFAIL','REFUSED','duplicate'))),sum(result IN ('SERVFAIL','REFUSED')),sum(cache_seen=1 AND forwarded=0) FROM dnsmasq_requests WHERE first_seen>=? AND first_seen<?""",(a,b)).fetchone()
- t,dup,ok,bad,cache=[v or 0 for v in (t,dup,ok,bad,cache)]
+ aggregated=collect_aggregated(db,a,b)
+ if aggregated is not None:return aggregated
+ t,cache=db.execute("SELECT count(*),coalesce(sum(duration_ms=0),0) FROM smartdns_requests WHERE ts>=? AND ts<?",(a,b)).fetchone()
  ups=[]
  all_durations=[]
  bins=[50,100,150,200,250,300,400,500,700,1000,1500,3000]
  histogram=[0]*13
- for name,n,failed in db.execute("""SELECT upstream,count(*),sum(status='failed') FROM dnsproxy_upstream_attempts WHERE identity LIKE '%:exact:%' AND first_seen>=? AND first_seen<? GROUP BY upstream ORDER BY count(*) DESC""",(a,b)):
-  durations=[v[0] for v in db.execute("""SELECT duration_ms FROM dnsproxy_upstream_attempts WHERE identity LIKE '%:exact:%' AND first_seen>=? AND first_seen<? AND upstream=? AND status='success' AND duration_ms IS NOT NULL""",(a,b,name))]
-  ups.append(dict(name=name,total=n,failed=failed or 0,success_rate=pct(n-(failed or 0),n),p50=quant(durations,.5),p95=quant(durations,.95),p99=quant(durations,.99),over_3s=sum(v>=3000 for v in durations)))
-  all_durations.extend(durations)
-  for duration in durations:
-   for i,limit in enumerate(bins):
-    if duration<limit:
-     histogram[i]+=1
-     break
-   else:histogram[-1]+=1
- packet=db.execute("SELECT count(*) FROM dnsproxy_packet_events WHERE ts>=? AND ts<?",(a,b)).fetchone()[0]
- cached=db.execute("SELECT count(*) FROM dnsproxy_cache_events WHERE ts>=? AND ts<?",(a,b)).fetchone()[0]
- return dict(window=dict(start=a,end=b),dnsmasq=dict(total=t,success=ok,failed=bad,duplicate=dup,unconfirmed=t-dup-ok-bad,confirmed_success_rate=pct(ok,ok+bad),overall_success_rate=pct(ok,t),cache_hits=cache,cache_hit_rate=pct(cache,t)),dnsproxy=dict(packet_events=packet,cache_events=cached,cache_event_ratio=pct(cached,packet),upstreams=ups,latency_distribution=dict(bounds_ms=bins,counts=histogram,total=len(all_durations),p50=quant(all_durations,.5),p95=quant(all_durations,.95),p99=quant(all_durations,.99),p999=quant(all_durations,.999),ge1s=sum(histogram[10:]),ge3s=histogram[-1],scope="successful upstream exchanges; not deduplicated client requests"),final_latency="N/A: unpaired upstream events"))
+ # Exact completions only. Histograms merge by adding counts; quantiles are
+ # bucket estimates and never claim precision within an individual bucket.
+ rows=db.execute("""SELECT first_seen,upstream,status,duration_ms FROM dnsproxy_upstream_attempts WHERE identity LIKE '%:exact:%' AND first_seen>=? AND first_seen<?""",(a,b)).fetchall()
+ by_up={}
+ for ts,name,status,duration in rows:
+  item=by_up.setdefault(name,[0,0,[0]*(len(bins)+1)]);item[0]+=1;item[1]+=int(status=='failed')
+  if status=='success' and duration is not None:
+   i=next((i for i,bound in enumerate(bins) if duration<bound),len(bins));item[2][i]+=1
+ for name,(n,failed,counts) in sorted(by_up.items(),key=lambda x:-x[1][0]):
+  total=sum(counts);p50=quant_hist(bins,counts,.5);p95=quant_hist(bins,counts,.95);p99=quant_hist(bins,counts,.99)
+  over3=counts[-1]
+  ups.append(dict(name=name,total=n,failed=failed,success_rate=pct(n-failed,n),p50=p50,p95=p95,p99=p99,over_3s=over3))
+  for i,count in enumerate(counts):histogram[i]+=count
+ tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+ packet=db.execute("SELECT count(*) FROM dnsproxy_packet_events WHERE ts>=? AND ts<?",(a,b)).fetchone()[0] if 'dnsproxy_packet_events' in tables else 0
+ cached=db.execute("SELECT count(*) FROM dnsproxy_cache_events WHERE ts>=? AND ts<?",(a,b)).fetchone()[0] if 'dnsproxy_cache_events' in tables else 0
+ return dict(window=dict(start=a,end=b),smartdns=dict(total=t,cache_hits=cache,cache_hit_rate=pct(cache,t),cache_estimate="time=0ms; not an authoritative cache-hit flag"),dnsproxy=dict(packet_events=packet,cache_events=cached,cache_event_ratio=pct(cached,packet),upstreams=ups,latency_distribution=dict(bounds_ms=bins,counts=histogram,total=sum(histogram),p50=quant_hist(bins,histogram,.5),p95=quant_hist(bins,histogram,.95),p99=quant_hist(bins,histogram,.99),p999=quant_hist(bins,histogram,.999),ge1s=sum(histogram[10:]),ge3s=histogram[-1],scope="successful upstream exchanges; not deduplicated client requests; bucket-estimated quantiles"),final_latency="N/A: unpaired upstream events"))
 def show(d,color):
  import shutil
  def style(s,n):return ("\033["+n+"m"+s+"\033[0m") if color else s
- m=d["dnsmasq"];p=d["dnsproxy"];width=shutil.get_terminal_size((96,24)).columns
+ m=d["smartdns"];p=d["dnsproxy"];width=shutil.get_terminal_size((96,24)).columns
  compact=width<86
  def n(v):return f"{v:,}"
  def rate(v):return "N/A" if v is None else f"{v:.2f}%"
@@ -54,9 +157,8 @@ def show(d,color):
  def section(title):line(style("─ "+title+" "+"─"*max(0,(min(width,100)-len(title)-3)),"36"))
  line(style("DNS SUMMARY  •  local-57  •  READ ONLY","1;36"))
  line(f"{d['window']['start']}  →  {d['window']['end']}")
- section("DNSMASQ")
- line(f"确认成功 {style(rate(m['confirmed_success_rate']),'32'):>8}   全量成功 {style(rate(m['overall_success_rate']),'32'):>8}   缓存命中 {rate(m['cache_hit_rate'])}")
- line(f"总查询 {n(m['total'])}  成功 {n(m['success'])}  失败 {n(m['failed'])}  未确认 {n(m['unconfirmed'])}  重复 {n(m['duplicate'])}")
+ section("SMARTDNS")
+ line(f"总查询 {n(m['total'])}  0ms请求 {n(m['cache_hits'])}  0ms比例 {rate(m['cache_hit_rate'])}")
  section("DNSPROXY")
  line(f"请求事件 {n(p['packet_events'])}  缓存事件 {n(p['cache_events'])}  事件比例 {rate(p['cache_event_ratio'])}")
  section("UPSTREAM / SUCCESSFUL EXCHANGES (ms)")

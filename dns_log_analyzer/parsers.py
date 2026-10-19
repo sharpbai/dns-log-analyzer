@@ -42,6 +42,11 @@ def parse(source, line, year=None):
         elif event in ("reply", "cached", "config") and " is " in detail:
             domain, result = detail.split(" is ", 1)
         return dict(ts=ts, level=None, event=event, query_id=d["qid"], client=d["client"], domain=domain, qtype=qtype, upstream=upstream, protocol=None, duration_ms=None, duration_kind=None, result=result, error=None, fields=json.dumps({"pid": d["pid"], "detail": detail}, ensure_ascii=False))
+    if source == "smartdns":
+        m=re.match(r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+)\] (\S+) query (.*), type (\d+), time (\d+)ms, speed: ([^,]+), result(?: (.*))?$",line)
+        if not m:return None
+        ts,client,domain,qtype,elapsed,speed,result=m.groups()
+        return dict(ts=ts.replace(" ","T").replace(",","."),client=client,domain=domain,qtype=qtype,duration_ms=int(elapsed),result=result or "",fields=json.dumps({"speed":speed}))
     if source == "dnsproxy":
         m = DNSPROXY.match(line)
         if not m: return None

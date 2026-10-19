@@ -20,6 +20,8 @@ def open_db(path):
       client TEXT, domain TEXT, qtype TEXT, cache_seen INTEGER DEFAULT 0,
       forwarded INTEGER DEFAULT 0, upstream TEXT, response_count INTEGER DEFAULT 0,
       result TEXT, state TEXT DEFAULT 'pending');
+    CREATE TABLE IF NOT EXISTS smartdns_requests(id INTEGER PRIMARY KEY,identity TEXT UNIQUE,ts TEXT NOT NULL,client TEXT,domain TEXT,qtype TEXT,duration_ms INTEGER,result TEXT,speed TEXT);
+    CREATE INDEX IF NOT EXISTS idx_smartdns_time ON smartdns_requests(ts);
     CREATE TABLE IF NOT EXISTS dnsproxy_requests(
       id INTEGER PRIMARY KEY, identity TEXT UNIQUE, first_seen TEXT, last_seen TEXT,
       client TEXT, domain TEXT, qtype TEXT, state TEXT DEFAULT 'observed');
@@ -33,6 +35,10 @@ def open_db(path):
     CREATE TABLE IF NOT EXISTS parser_diagnostics(
       source TEXT, reason TEXT, count INTEGER DEFAULT 0,
       PRIMARY KEY(source,reason));
+    CREATE TABLE IF NOT EXISTS dnsproxy_packet_events(identity TEXT PRIMARY KEY, ts TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS idx_dnsproxy_packet_ts ON dnsproxy_packet_events(ts);
+    CREATE TABLE IF NOT EXISTS dnsproxy_cache_events(identity TEXT PRIMARY KEY, ts TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS idx_dnsproxy_cache_ts ON dnsproxy_cache_events(ts);
     CREATE INDEX IF NOT EXISTS idx_masq_time ON dnsmasq_requests(first_seen);
     CREATE INDEX IF NOT EXISTS idx_masq_identity_prefix ON dnsmasq_requests(identity COLLATE NOCASE);
     CREATE INDEX IF NOT EXISTS idx_proxy_time ON dnsproxy_requests(first_seen);
@@ -70,7 +76,11 @@ def process_dnsmasq(db,e,offset,generation=0):
 def process_dnsproxy(db,e,offset,generation=0):
     if not e:return diagnostic(db,"dnsproxy","unparsed")
     event=e["event"]
-    if event=="handling request":
+    if event=="handling new packet":
+        db.execute("INSERT OR IGNORE INTO dnsproxy_packet_events(identity,ts) VALUES(?,?)",(f"g:{generation}:packet:{offset}",e["ts"]))
+    elif event=="replying from cache":
+        db.execute("INSERT OR IGNORE INTO dnsproxy_cache_events(identity,ts) VALUES(?,?)",(f"g:{generation}:cache:{offset}",e["ts"]))
+    elif event=="handling request":
         db.execute("INSERT OR IGNORE INTO dnsproxy_requests(identity,first_seen,last_seen,client,domain,qtype) VALUES(?,?,?,?,?,?)",(f"g:{generation}:line:{offset}",e["ts"],e["ts"],e["client"],e["domain"],e["qtype"]))
     elif event in ("exchange successfully finished","exchange failed"):
         fields=json.loads(e["fields"])
@@ -133,7 +143,11 @@ def _consume(db,source,stream,start,generation,batch_size):
         with db:
             for offset,line in batch:
                 e=parse(source,line)
-                if source=='dnsmasq': process_dnsmasq(db,e,offset,generation)
+                if source=="smartdns":
+                    if e:
+                        db.execute("INSERT OR IGNORE INTO smartdns_requests(identity,ts,client,domain,qtype,duration_ms,result,speed) VALUES(?,?,?,?,?,?,?,?)",(f"g:{generation}:line:{offset}",e["ts"],e["client"],e["domain"],e["qtype"],e["duration_ms"],e["result"],json.loads(e["fields"])["speed"]))
+                    else:diagnostic(db,"smartdns","unparsed")
+                elif source=='dnsmasq': process_dnsmasq(db,e,offset,generation)
                 else: process_dnsproxy(db,e,offset,generation)
         total+=len(batch)
     return total,stream.tell()
