@@ -120,6 +120,58 @@ def collect_aggregated(db, a, b):
             scope="successful upstream exchanges; not deduplicated client requests; bucket-estimated quantiles"),
           final_latency="N/A: unpaired upstream events"))
 
+def collect_aggregate_only(db,a,b):
+ """Return only existing aggregate rows; never inspect request-level tables."""
+ from datetime import datetime,timedelta
+ start,end=datetime.fromisoformat(a),datetime.fromisoformat(b)
+ bounds=[50,100,150,200,250,300,400,500,700,1000,1500,3000]
+ metrics={}
+ for source,dimension,n in db.execute(
+  "SELECT source,dimension,sum(total) FROM dns_hourly_aggregates WHERE hour>=? AND hour<? GROUP BY source,dimension",
+  (a,b)):
+  metrics[(source,dimension)]=int(n)
+ # Minute rows only for the currently unfinished hour. Do not double count
+ # completed hourly buckets or require a historical progress marker.
+ tail_start=end.replace(minute=0,second=0,microsecond=0)
+ if tail_start<start:tail_start=start
+ for source,dimension,n in db.execute(
+  "SELECT source,dimension,sum(total) FROM dns_minute_aggregates WHERE minute>=? AND minute<? GROUP BY source,dimension",
+  (tail_start.isoformat(timespec="seconds"),b)):
+  metrics[(source,dimension)]=metrics.get((source,dimension),0)+int(n)
+ names=set()
+ for (source,dimension),n in metrics.items():
+  if source=="dnsproxy" and dimension.startswith(("attempts:","failed:")):
+   names.add(dimension.split(":",1)[1])
+ upstream={name:[0]*13 for name in names}
+ for name,bin_index,n in db.execute(
+  "SELECT upstream,bin,sum(total) FROM dns_latency_bins WHERE hour>=? AND hour<? GROUP BY upstream,bin",(a,b)):
+  upstream.setdefault(name,[0]*13)[int(bin_index)]+=int(n)
+ names.update(upstream)
+ ups=[]
+ all_counts=[0]*13
+ for name in names:
+  counts=upstream.get(name,[0]*13)
+  all_counts=[x+y for x,y in zip(all_counts,counts)]
+  n=metrics.get(("dnsproxy","attempts:"+name),0)
+  bad=metrics.get(("dnsproxy","failed:"+name),0)
+  ups.append(dict(name=name,total=n,failed=bad,success_rate=pct(n-bad,n),
+    p50=quant_hist(bounds,counts,.5),p95=quant_hist(bounds,counts,.95),
+    p99=quant_hist(bounds,counts,.99),over_3s=counts[-1]))
+ ups.sort(key=lambda u:-u["total"])
+ def m(source,key):return metrics.get((source,key),0)
+ total=m("smartdns","total");hits=m("smartdns","cache_hits")
+ packets=m("dnsproxy","packet_events");cached=m("dnsproxy","cache_events")
+ return dict(window=dict(start=a,end=b),
+  smartdns=dict(total=total,cache_hits=hits,cache_hit_rate=pct(hits,total),
+    cache_estimate="time=0ms; not an authoritative cache-hit flag"),
+  dnsproxy=dict(packet_events=packets,cache_events=cached,cache_event_ratio=pct(cached,packets),
+   upstreams=ups,latency_distribution=dict(bounds_ms=bounds,counts=all_counts,total=sum(all_counts),
+    p50=quant_hist(bounds,all_counts,.5),p95=quant_hist(bounds,all_counts,.95),
+    p99=quant_hist(bounds,all_counts,.99),p999=quant_hist(bounds,all_counts,.999),
+    ge1s=sum(all_counts[10:]),ge3s=all_counts[-1],
+    scope="completed-hour upstream aggregates; current-hour latency excluded"),
+   final_latency="N/A: unpaired upstream events"))
+
 def collect(db,a,b):
  aggregated=collect_aggregated(db,a,b)
  if aggregated is not None:return aggregated
@@ -176,12 +228,12 @@ def main():
  p=argparse.ArgumentParser(prog="dns-summary",description="DNS 只读综合仪表盘；默认终端 TUI，不动态刷新")
  p.add_argument("period",nargs="?",choices=["today","yesterday","week","month","last7"])
  p.add_argument("--days",type=int);p.add_argument("--start");p.add_argument("--end")
- p.add_argument("--db",default="/var/lib/dns-log-analyzer/requests.sqlite3")
+ p.add_argument("--aggregate-only",action="store_true");p.add_argument("--db",default="/var/lib/dns-log-analyzer/requests.sqlite3")
  g=p.add_mutually_exclusive_group();g.add_argument("--plain",action="store_true");g.add_argument("--json",action="store_true")
  a=p.parse_args()
  try:
   x,y=period(a)
-  with sqlite3.connect(Path(a.db).resolve().as_uri()+"?mode=ro",uri=True) as db:d=collect(db,x,y)
+  with sqlite3.connect(Path(a.db).resolve().as_uri()+"?mode=ro",uri=True) as db:d=collect_aggregate_only(db,x,y) if a.aggregate_only else collect(db,x,y)
  except (ValueError,sqlite3.Error,OSError) as e:p.error(str(e))
  if a.json:print(json.dumps(d,ensure_ascii=False,indent=2))
  else:show(d,sys.stdout.isatty() and not a.plain)
