@@ -33,4 +33,12 @@ class MinuteWindowTests(unittest.TestCase):
   self.assertEqual(one["dnsproxy"]["latency_distribution"]["total"],2)
   self.assertEqual(one["dnsproxy"]["upstreams"][0]["over_3s"],1)
   self.assertEqual(one["dnsproxy"]["upstreams"][0]["p50"],100.0)
+  db.execute("CREATE TABLE dnsproxy_upstream_attempts(identity TEXT,first_seen TEXT,upstream TEXT,status TEXT,duration_ms REAL)")
+  db.executemany("INSERT INTO dnsproxy_upstream_attempts VALUES(?,?,?,?,?)",[
+   ("g:1:exact:1","2026-10-19T23:11:01","google","success",55),
+   ("g:1:exact:2","2026-10-19T23:11:02","google","success",3105)])
+  exact=m.collect_aggregate_only(db,"2026-10-19T23:11:00","2026-10-19T23:12:00",exact_short=True)
+  self.assertEqual(exact["dnsproxy"]["upstreams"][0]["p50"],55)
+  self.assertEqual(exact["dnsproxy"]["upstreams"][0]["p99"],55)
+  self.assertEqual(exact["dnsproxy"]["upstreams"][0]["over_3s"],1)
 if __name__=="__main__":unittest.main()

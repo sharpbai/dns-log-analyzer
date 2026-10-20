@@ -135,8 +135,8 @@ def collect_aggregated(db, a, b):
             scope="successful upstream exchanges; not deduplicated client requests; bucket-estimated quantiles"),
           final_latency="N/A: unpaired upstream events"))
 
-def collect_aggregate_only(db,a,b):
- """Return only existing aggregate rows; never inspect request-level tables."""
+def collect_aggregate_only(db,a,b,exact_short=False):
+ """Read aggregate counters; optionally use bounded recent upstream detail for exact quantiles."""
  from datetime import datetime,timedelta
  start,end=datetime.fromisoformat(a),datetime.fromisoformat(b)
  minute_window=(end-start).total_seconds()<=300
@@ -170,6 +170,12 @@ def collect_aggregate_only(db,a,b):
    "SELECT upstream,bin,sum(total) FROM dns_latency_minute_bins WHERE minute>=? AND minute<? GROUP BY upstream,bin",(a,b)):
    upstream.setdefault(name,[0]*13)[int(bin_index)]+=int(n)
  names.update(upstream)
+ exact_values={}
+ if exact_short and minute_window:
+  for name,duration in db.execute(
+   "SELECT coalesce(upstream,\'(unknown)\'),duration_ms FROM dnsproxy_upstream_attempts WHERE first_seen>=? AND first_seen<? AND instr(identity,\':exact:\')>0 AND status=\'success\' AND duration_ms IS NOT NULL ORDER BY upstream,duration_ms",(a,b)):
+   exact_values.setdefault(name,[]).append(float(duration))
+  names.update(exact_values)
  ups=[]
  all_counts=[0]*13
  for name in names:
@@ -177,9 +183,10 @@ def collect_aggregate_only(db,a,b):
   all_counts=[x+y for x,y in zip(all_counts,counts)]
   n=metrics.get(("dnsproxy","attempts:"+name),0)
   bad=metrics.get(("dnsproxy","failed:"+name),0)
+  vals=exact_values.get(name)
+  q=lambda p: quant(vals,p) if vals else (None if exact_short and minute_window else quant_hist(bounds,counts,p))
   ups.append(dict(name=name,total=n,failed=bad,success_rate=pct(n-bad,n),
-    p50=quant_hist(bounds,counts,.5),p95=quant_hist(bounds,counts,.95),
-    p99=quant_hist(bounds,counts,.99),over_3s=counts[-1]))
+    p50=q(.5),p95=q(.95),p99=q(.99),over_3s=sum(v>=3000 for v in vals) if vals else counts[-1]))
  ups.sort(key=lambda u:-u["total"])
  def m(source,key):return metrics.get((source,key),0)
  total=m("smartdns","total");hits=m("smartdns","cache_hits")
@@ -189,10 +196,13 @@ def collect_aggregate_only(db,a,b):
     cache_estimate="time=0ms; not an authoritative cache-hit flag"),
   dnsproxy=dict(packet_events=packets,cache_events=cached,cache_event_ratio=pct(cached,packets),
    upstreams=ups,latency_distribution=dict(bounds_ms=bounds,counts=all_counts,total=sum(all_counts),
-    p50=quant_hist(bounds,all_counts,.5),p95=quant_hist(bounds,all_counts,.95),
-    p99=quant_hist(bounds,all_counts,.99),p999=quant_hist(bounds,all_counts,.999),
-    ge1s=sum(all_counts[10:]),ge3s=all_counts[-1],
-    scope="successful upstream exchanges; minute bins for short windows, completed-hour bins for historical windows"),
+    p50=quant(sorted(v for values in exact_values.values() for v in values),.5) if exact_short and minute_window else quant_hist(bounds,all_counts,.5),
+    p95=quant(sorted(v for values in exact_values.values() for v in values),.95) if exact_short and minute_window else quant_hist(bounds,all_counts,.95),
+    p99=quant(sorted(v for values in exact_values.values() for v in values),.99) if exact_short and minute_window else quant_hist(bounds,all_counts,.99),
+    p999=quant(sorted(v for values in exact_values.values() for v in values),.999) if exact_short and minute_window else quant_hist(bounds,all_counts,.999),
+    ge1s=sum(v>=1000 for values in exact_values.values() for v in values) if exact_short and minute_window else sum(all_counts[10:]),
+    ge3s=sum(v>=3000 for values in exact_values.values() for v in values) if exact_short and minute_window else all_counts[-1],
+    scope="successful upstream exchanges; exact short-window quantiles when enabled; otherwise histogram estimates"),
    final_latency="N/A: unpaired upstream events"))
 
 def collect(db,a,b):
@@ -251,12 +261,13 @@ def main():
  p=argparse.ArgumentParser(prog="dns-summary",description="DNS 只读综合仪表盘；默认终端 TUI，不动态刷新")
  p.add_argument("period",nargs="?",choices=["minute1","minute5","today","yesterday","week","month","last7"])
  p.add_argument("--days",type=int);p.add_argument("--start");p.add_argument("--end")
- p.add_argument("--aggregate-only",action="store_true");p.add_argument("--db",default="/var/lib/dns-log-analyzer/requests.sqlite3")
+ p.add_argument("--aggregate-only",action="store_true");p.add_argument("--exact-short",action="store_true");p.add_argument("--db",default="/var/lib/dns-log-analyzer/requests.sqlite3")
  g=p.add_mutually_exclusive_group();g.add_argument("--plain",action="store_true");g.add_argument("--json",action="store_true")
  a=p.parse_args()
  try:
   x,y=period(a)
-  with sqlite3.connect(Path(a.db).resolve().as_uri()+"?mode=ro",uri=True) as db:d=collect_aggregate_only(db,x,y) if a.aggregate_only else collect(db,x,y)
+  if a.exact_short and a.period not in ("minute1","minute5"):raise ValueError("--exact-short only supports minute1/minute5")
+  with sqlite3.connect(Path(a.db).resolve().as_uri()+"?mode=ro",uri=True) as db:d=collect_aggregate_only(db,x,y,exact_short=a.exact_short) if a.aggregate_only or a.exact_short else collect(db,x,y)
  except (ValueError,sqlite3.Error,OSError) as e:p.error(str(e))
  if a.json:print(json.dumps(d,ensure_ascii=False,indent=2))
  else:show(d,sys.stdout.isatty() and not a.plain)
