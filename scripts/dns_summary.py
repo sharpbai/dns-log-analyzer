@@ -24,12 +24,23 @@ def period(a):
 def pct(x,n):return round(100*x/n,3) if n else None
 def quant(x,p):return round(sorted(x)[int((len(x)-1)*p)],1) if x else None
 def quant_hist(bounds,counts,p):
+ """Estimate quantiles by uniform interpolation within finite histogram bins.
+
+ The final >= max(bound) bucket is open-ended, so its quantiles are unknown.
+ """
  total=sum(counts)
  if not total:return None
- rank=max(1,int((total-1)*p)+1); seen=0
+ target=max(0.0,min(1.0,p))*total
+ seen=0
  for i,count in enumerate(counts):
+  if not count:continue
+  if target<=seen+count:
+   if i>=len(bounds):return None
+   low=0 if i==0 else bounds[i-1]
+   high=bounds[i]
+   fraction=max(0.0,min(1.0,(target-seen)/count))
+   return round(low+(high-low)*fraction,1)
   seen+=count
-  if seen>=rank:return bounds[i] if i<len(bounds) else None
  return None
 def summarize(db,start,end):
  t,cache=db.execute("SELECT count(*),coalesce(sum(duration_ms=0),0) FROM smartdns_requests WHERE ts>=? AND ts<?",(start,end)).fetchone()

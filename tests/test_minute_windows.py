@@ -32,5 +32,5 @@ class MinuteWindowTests(unittest.TestCase):
   self.assertEqual(one["smartdns"]["total"],3)
   self.assertEqual(one["dnsproxy"]["latency_distribution"]["total"],2)
   self.assertEqual(one["dnsproxy"]["upstreams"][0]["over_3s"],1)
-  self.assertEqual(one["dnsproxy"]["upstreams"][0]["p50"],100)
+  self.assertEqual(one["dnsproxy"]["upstreams"][0]["p50"],100.0)
 if __name__=="__main__":unittest.main()
