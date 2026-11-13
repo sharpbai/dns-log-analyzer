@@ -21,3 +21,12 @@
 3. 分钟延迟分位数为直方图插值估计，最末开区间无法给出准确分位数。
 4. 海外分支已接入上游交换日志；网页仪表盘接入仍待完成。
 5. 生产必须遵循 Git commit 发布，先核对生产路径、工作树、数据库与服务，再启用采集器。
+
+## 2026-11-14 生产验收
+- local-57: `dns-v2-collector.service` 增量采集运行中，原 V1 服务保持独立；`--from-end` 首次跳过历史日志，后续从 SQLite offset 继续。
+- 五层：unbound、domestic、fanout、rripfilter、overseas，海外仅统计 dnsproxy 上游交换。
+- local-193: `/dns-stat/v2/`，分钟级 timer 从 local-57 受限 SSH 强制命令获取 1/5/60/1440 分钟 JSON，HTTPS 页面与数据均已验收 200。
+- 安全：上游错误状态统一聚合为 `status:ok` 或 `status:error`，不持久化带域名/URL 的原始错误内容；已清理上线初期两条不合规 metric key。
+- CPU 观察：海外接入后 V2 Python 进程约 0.5% CPU、RSS 约 19 MiB，systemd CPUQuota=25%、MemoryMax=256M。
+- 轮转：已通过模拟 `copytruncate` 与 rename 的 checkpoint 测试；由于 copytruncate 在复制到截断间存在固有竞态，**不承诺极端并发下绝对零丢失**。如需要严格无损，应调整生产日志轮转协议与写入端 reopen 机制。
+- 限制：时间戳统一 UTC 存储、页面按北京时间显示；跨层不可相加；分位数为分桶估计；新文件替换/截断时可能重新读取新文件（不是周期性全量扫描）。
