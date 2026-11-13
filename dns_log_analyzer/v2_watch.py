@@ -31,11 +31,14 @@ def run(db,paths,interval=15,once=False,from_end=False):
         if once:return
         while not stopped:
             dirty,overflow=watcher.wait(interval)
+            if dirty and not overflow:
+                time.sleep(0.25)
             if overflow:dirty=set(paths)
             if not dirty:dirty=set(paths)
             # Independent checkpoints allow rripfilter and domestic to read
             # the same file without double-counting each other's metrics.
-            print("v2 update",collect(db,{s:paths[s] for s in dirty}),flush=True)
+            result=collect(db,{s:paths[s] for s in dirty})
+            if any(result.values()):print("v2 update",result,flush=True)
     finally:
         if watcher:watcher.close()
 def main():
