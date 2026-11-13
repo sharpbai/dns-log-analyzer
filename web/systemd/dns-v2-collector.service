@@ -4,10 +4,16 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/srv/dns-log-analyzer
+WorkingDirectory=/home/duobeigw/sources/dns-log-analyzer
 ExecStart=/usr/bin/python3 -m dns_log_analyzer.v2_watch --db /var/lib/dns-log-analyzer/requests.sqlite3 --from-end --interval 15
 Restart=on-failure
 RestartSec=5
+CPUQuota=25%
+MemoryMax=256M
+Nice=10
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dns-log-analyzer
+ProtectHome=read-only
 NoNewPrivileges=yes
 [Install]
 WantedBy=multi-user.target
