@@ -57,7 +57,8 @@ def parse_line(source,line):
         if not event:return None
         if event["event"]!="upstream exchange completed":return None
         when=dt.datetime.fromisoformat(event["ts"]).replace(tzinfo=ZoneInfo("Asia/Shanghai"))
-        status=event["result"] or "unknown"
+        # Never persist upstream error strings: they can contain domains, URLs and DNS payloads.
+        status="ok" if event["result"]=="ok" else "error"
         metrics={"exchanges":1,"status:"+status:1}
         if event["qtype"]:metrics["qtype:"+event["qtype"]]=1
         if event["protocol"]:metrics["transport:"+event["protocol"]]=1

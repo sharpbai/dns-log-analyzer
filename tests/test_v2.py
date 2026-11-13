@@ -64,6 +64,9 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(event[1]["exchanges"],1)
         self.assertAlmostEqual(event[2],417.341181)
         self.assertIsNone(parse_line("overseas",line.replace("upstream exchange completed","resolved")))
+        error=parse_line("overseas",line.replace("status=ok","status=failed-for-sensitive.example.com"))
+        self.assertEqual(error[1]["status:error"],1)
+        self.assertNotIn("sensitive",str(error))
     def test_from_end(self):
         with tempfile.TemporaryDirectory() as d:
             db=sqlite3.connect(":memory:");schema(db)
