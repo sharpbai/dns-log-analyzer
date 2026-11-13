@@ -140,7 +140,29 @@ def summary(db,start,end):
         data["latency_ms"]={"bounds_ms":BOUNDS,"counts":counts,"total":sum(counts),
             "p50":quantile(counts,.5),"p95":quantile(counts,.95),"p99":quantile(counts,.99),
             "ge3s":sum(counts[BOUNDS.index(3000)+1:])}
-    return {"window":{"start":start,"end":end,"timezone":"UTC"},"layers":result}
+    # Unbound is the DNS client-facing ingress in the currently deployed chain.
+    # All values are response-based and explicitly scoped; no cross-layer sums.
+    ingress=result["unbound"]
+    m=ingress["metrics"]
+    total=m.get("requests",0)
+    failures=sum(m.get("rcode:"+r,0) for r in ("SERVFAIL","REFUSED","FORMERR","NOTIMP"))
+    cached=m.get("cache_flag:1",0)
+    duration=(iso(end)-iso(start)).total_seconds()
+    global_metrics={
+        "scope":"unbound_completed_responses",
+        "qps":round(total/duration,3) if duration>0 else None,
+        "responses":total,
+        "latency_ms":{k:ingress["latency_ms"][k] for k in ("p50","p95","p99")},
+        "failure_count":failures,
+        "failure_rate":round(100*failures/total,3) if total else None,
+        "cache_flag_hits":cached,
+        "cache_flag_rate":round(100*cached/total,3) if total else None,
+        "qtypes":{"A":m.get("qtype:A",0),"AAAA":m.get("qtype:AAAA",0)},
+        "race_winner":None,
+        "top_domains":None,
+        "top_clients":None,
+    }
+    return {"window":{"start":start,"end":end,"timezone":"UTC"},"global":global_metrics,"layers":result}
 def quantile(counts,p):
     total=sum(counts)
     if not total:return None

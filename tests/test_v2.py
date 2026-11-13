@@ -37,6 +37,21 @@ class V2Tests(unittest.TestCase):
             stats=Path(d)/"stats.stdout";stats.write_text(STATS+"\n")
             self.assertEqual(ingest(db,"rripfilter",stats),1)
             self.assertEqual(summary(db,"2026-11-13T16:11:00","2026-11-13T16:12:00")["layers"]["rripfilter"]["metrics"]["queries"],354)
+    def test_global_unbound_ingress(self):
+        with tempfile.TemporaryDirectory() as d:
+            db=sqlite3.connect(":memory:");schema(db)
+            p=Path(d)/"unbound.stdout"
+            p.write_text(UNBOUND+"\n"+UNBOUND.replace("NOERROR","SERVFAIL").replace(" 0 102"," 1 102")+"\n")
+            self.assertEqual(ingest(db,"unbound",p),2)
+            start=parse_line("unbound",UNBOUND)[0]
+            import datetime as dt
+            end=(dt.datetime.fromisoformat(start)+dt.timedelta(minutes=1)).isoformat()
+            result=summary(db,start,end)["global"]
+            self.assertEqual(result["responses"],2)
+            self.assertEqual(result["failure_rate"],50)
+            self.assertEqual(result["cache_flag_rate"],50)
+            self.assertAlmostEqual(result["qps"],2/60,places=3)
+            self.assertIsNone(result["race_winner"])
     def test_copytruncate_checkpoint(self):
         with tempfile.TemporaryDirectory() as d:
             db=sqlite3.connect(":memory:");schema(db)
