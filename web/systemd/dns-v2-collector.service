@@ -1,0 +1,13 @@
+[Unit]
+Description=DNS V2 layered incremental log collector
+After=network.target
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/srv/dns-log-analyzer
+ExecStart=/usr/bin/python3 -m dns_log_analyzer.v2_watch --db /var/lib/dns-log-analyzer/requests.sqlite3 --from-end --interval 15
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+[Install]
+WantedBy=multi-user.target
