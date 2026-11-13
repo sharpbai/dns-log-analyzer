@@ -10,6 +10,8 @@ import json
 import re
 import sqlite3
 from pathlib import Path
+from zoneinfo import ZoneInfo
+from .parsers import parse as parse_existing
 
 UTC=dt.timezone.utc
 UNBOUND=re.compile(r'^\[(\d+)\] unbound\[[^]]+\] info: \S+ \S+ (\S+) IN (\S+) ([\d.]+) ([01]) (\d+)\s*$')
@@ -17,7 +19,7 @@ COREDNS=re.compile(r'^\[INFO\] (\S+) \S+ - \d+ "([A-Z0-9]+) IN \S+ (udp|tcp) [^"
 STATS=re.compile(r'^(\S+) rripfilter_stats interval=60s (.*)$')
 FIELDS=re.compile(r'(\w+)=(\d+)')
 BOUNDS=(1,5,10,25,50,100,200,500,1000,2000,3000,5000)
-SOURCES=("unbound","fanout","domestic","rripfilter")
+SOURCES=("unbound","fanout","domestic","rripfilter","overseas")
 def minute(timestamp):
     return timestamp.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:00")
 def iso(value):
@@ -48,6 +50,17 @@ def diagnostic(db,source,reason):
     db.execute("""INSERT INTO v2_diagnostics VALUES(?,?,1)
       ON CONFLICT(source,reason) DO UPDATE SET total=total+1""",(source,reason))
 def parse_line(source,line):
+    if source=="overseas":
+        event=parse_existing("dnsproxy",line)
+        if not event:return None
+        if event["event"]!="upstream exchange completed":return None
+        when=dt.datetime.fromisoformat(event["ts"]).replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+        status=event["result"] or "unknown"
+        metrics={"exchanges":1,"status:"+status:1}
+        if event["qtype"]:metrics["qtype:"+event["qtype"]]=1
+        if event["protocol"]:metrics["transport:"+event["protocol"]]=1
+        if event["duration_ms"] is None:return minute(when),metrics,None
+        return minute(when),metrics,event["duration_ms"]
     if source=="unbound":
         m=UNBOUND.match(line)
         if not m:return None

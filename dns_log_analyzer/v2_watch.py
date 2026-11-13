@@ -51,7 +51,7 @@ def main():
     a=p.parse_args()
     if a.interval<=0:p.error("interval must be positive")
     base=Path(a.log_dir)
-    paths={s:base/(( "domestic" if s=="rripfilter" else s)+".stdout") for s in SOURCES}
+    paths={s:base/("dnsproxy.log" if s=="overseas" else ("domestic" if s=="rripfilter" else s)+".stdout") for s in SOURCES}
     db=sqlite3.connect(a.db,timeout=30)
     db.execute("PRAGMA journal_mode=WAL")
     schema(db)
