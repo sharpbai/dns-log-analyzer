@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh DNS V2 snapshots every minute
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=true
+Unit=dns-v2-web-collect.service
+[Install]
+WantedBy=timers.target

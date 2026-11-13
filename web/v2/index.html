@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DNS Observability V2</title>
+<style>
+:root{color-scheme:dark;font:13px system-ui,-apple-system,sans-serif;background:#0c111b;color:#dce6f2}
+*{box-sizing:border-box}body{max-width:1180px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+h1{font-size:21px;margin:0}h2{font-size:14px;color:#80d8f2;margin:0 0 15px}.muted{color:#96aabd}.nav{display:flex;gap:8px;flex-wrap:wrap}
+button,.nav a{border:1px solid #3a4b60;background:#1a2b3d;color:#dce6f2;border-radius:7px;padding:9px 13px;text-decoration:none;cursor:pointer}
+button.active{border-color:#76d5ec;background:#245269}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:20px 0}
+.panel{background:#131d2c;border:1px solid #2b394b;border-radius:9px;padding:20px}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.value{font-size:25px;font-weight:700;margin-top:5px;font-variant-numeric:tabular-nums}.metric{border-bottom:1px solid #29384a;padding:9px 0;display:flex;justify-content:space-between;gap:10px}
+footer{font-size:12px;color:#96aabd;line-height:1.8}#status{margin-top:14px;color:#a8c5d6}
+@media(max-width:750px){body{padding:14px}.grid{grid-template-columns:1fr}.metrics{gap:8px}.value{font-size:20px}}
+</style></head><body>
+<header><div><h1>DNS OBSERVABILITY <span style="color:#80d8f2">/ V2</span></h1><div class="muted">分层事件时间统计 · local-57 → local-193</div></div>
+<div class="nav"><a href="../">V1 页面</a><button data-min="1">1 分钟</button><button data-min="5" class="active">5 分钟</button><button data-min="60">1 小时</button><button data-min="1440">24 小时</button><button id="refresh">刷新</button></div></header>
+<div id="status">读取数据中…</div><main id="panels" class="grid"></main>
+<footer>各层独立统计，不能相加为唯一客户端请求数。Unbound 为解析响应，domestic/fanout 为 CoreDNS 响应，rripfilter 为过滤器计数，overseas 为 dnsproxy 上游交换。分位数基于直方图估计；最后一个开放区间可能无法估计。时间窗口按 UTC 存储，页面按北京时间展示。</footer>
+<script>
+let period=5;const $=id=>document.getElementById(id),names={unbound:'UNBOUND · RECURSIVE',domestic:'DOMESTIC · FILTERED',fanout:'FANOUT · RACE',rripfilter:'RRIPFILTER · FILTER STATS',overseas:'OVERSEAS · DNSPROXY'};
+const fmt=n=>n==null?'—':Number(n).toLocaleString('zh-CN'),ms=n=>n==null?'—':fmt(Math.round(n))+' ms';
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
+function metric(parent,label,value){const r=el('div','metric');r.append(el('span','muted',label),el('strong','',value));parent.append(r)}
+function panel(source,d){const p=el('section','panel');p.append(el('h2','',names[source]||source));const m=d.metrics||{},lat=d.latency_ms||{},top=el('div','metrics');
+for(const [label,value] of [['请求/交换/过滤',fmt(m.requests??m.exchanges??m.queries??0)],['P50',ms(lat.p50)],['P99',ms(lat.p99)]]){const item=el('div');item.append(el('div','muted',label),el('div','value',value));top.append(item)}
+p.append(top);const keys=source==='rripfilter'?['accept','drop','bypass','partial','upstream_error','rejected_ipv4','rejected_ipv6']:source==='overseas'?['status:ok','status:error','transport:tcp','transport:udp','qtype:A','qtype:AAAA']:['rcode:NOERROR','rcode:NXDOMAIN','rcode:SERVFAIL','rcode:-','qtype:A','qtype:AAAA','qtype:HTTPS'];
+for(const k of keys)if(m[k]!=null)metric(p,k,fmt(m[k]));if(lat.total)metric(p,'P95 / ≥3s',ms(lat.p95)+' / '+fmt(lat.ge3s));return p}
+async function load(){try{$('status').textContent='正在读取…';const r=await fetch('data/minute'+period+'.json?t='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const data=await r.json();const main=$('panels');main.replaceChildren();for(const s of ['unbound','domestic','fanout','rripfilter','overseas'])main.append(panel(s,data.layers?.[s]||{}));const bj=s=>new Date(s+'Z').toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'});$('status').textContent=bj(data.window.start)+' → '+bj(data.window.end)+'（北京时间） · 快照 '+new Date(data.generated_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}catch(e){$('status').textContent='暂无法读取 V2 数据：'+e.message}}
+document.querySelectorAll('[data-min]').forEach(b=>b.onclick=()=>{period=Number(b.dataset.min);document.querySelectorAll('[data-min]').forEach(x=>x.classList.toggle('active',x===b));load()});$('refresh').onclick=load;load();setInterval(load,60000);
+</script></body></html>

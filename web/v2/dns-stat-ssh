@@ -1,0 +1,11 @@
+#!/bin/sh
+# Forced-command read-only gateway for local-193.
+case "${SSH_ORIGINAL_COMMAND:-}" in
+  minute1|minute5) exec /usr/local/bin/dns-summary "$SSH_ORIGINAL_COMMAND" --json --aggregate-only --exact-short ;;
+  today|yesterday|week|month|last7) exec /usr/local/bin/dns-summary "$SSH_ORIGINAL_COMMAND" --json --aggregate-only ;;
+  v2-minute1) exec /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_summary.py --db /var/lib/dns-log-analyzer/requests.sqlite3 --minutes 1 ;;
+  v2-minute5) exec /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_summary.py --db /var/lib/dns-log-analyzer/requests.sqlite3 --minutes 5 ;;
+  v2-minute60) exec /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_summary.py --db /var/lib/dns-log-analyzer/requests.sqlite3 --minutes 60 ;;
+  v2-minute1440) exec /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_summary.py --db /var/lib/dns-log-analyzer/requests.sqlite3 --minutes 1440 ;;
+  *) echo "Unsupported read-only report" >&2; exit 2 ;;
+esac

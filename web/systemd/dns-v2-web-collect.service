@@ -1,0 +1,12 @@
+[Unit]
+Description=Collect DNS V2 read-only JSON snapshots
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/dns-v2-web-collect.py
+TimeoutStartSec=120
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/dns-stat/current/v2/data
+ProtectHome=yes

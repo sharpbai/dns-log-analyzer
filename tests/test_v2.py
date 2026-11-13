@@ -37,6 +37,26 @@ class V2Tests(unittest.TestCase):
             stats=Path(d)/"stats.stdout";stats.write_text(STATS+"\n")
             self.assertEqual(ingest(db,"rripfilter",stats),1)
             self.assertEqual(summary(db,"2026-11-13T16:11:00","2026-11-13T16:12:00")["layers"]["rripfilter"]["metrics"]["queries"],354)
+    def test_copytruncate_checkpoint(self):
+        with tempfile.TemporaryDirectory() as d:
+            db=sqlite3.connect(":memory:");schema(db)
+            p=Path(d)/"domestic.stdout"
+            p.write_text((DOM+"\n")*10)
+            self.assertEqual(ingest(db,"domestic",p),10)
+            p.write_text(DOM.replace("NOERROR","SERVFAIL")+"\n")
+            self.assertEqual(ingest(db,"domestic",p),1)
+            self.assertEqual(ingest(db,"domestic",p),0)
+            data=summary(db,"2026-11-13T15:45:00","2026-11-13T15:46:00")["layers"]["domestic"]
+            self.assertEqual(data["metrics"]["requests"],11)
+    def test_rename_rotation(self):
+        with tempfile.TemporaryDirectory() as d:
+            db=sqlite3.connect(":memory:");schema(db)
+            p=Path(d)/"fanout.stdout"
+            p.write_text(DOM+"\n")
+            self.assertEqual(ingest(db,"fanout",p),1)
+            p.rename(Path(d)/"fanout.stdout.1")
+            p.write_text(DOM.replace("NOERROR","SERVFAIL")+"\n")
+            self.assertEqual(ingest(db,"fanout",p),1)
     def test_overseas(self):
         line="2026/11/14 00:00:01.361805 DEBUG upstream exchange completed addr=https://cloudflare-dns.com:443/dns-query proto=tcp qtype=A qname=p222-contacts.icloud.com.cn. id=30937 duration=417.341181ms status=ok"
         event=parse_line("overseas",line)

@@ -38,6 +38,8 @@ def schema(db):
     CREATE TABLE IF NOT EXISTS v2_diagnostics(
       source TEXT NOT NULL,reason TEXT NOT NULL,total INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(source,reason));
+    CREATE INDEX IF NOT EXISTS idx_v2_rollups_minute ON v2_rollups(minute);
+    CREATE INDEX IF NOT EXISTS idx_v2_latency_minute ON v2_latency_bins(minute);
     """)
     db.commit()
 def bucket(ms):
