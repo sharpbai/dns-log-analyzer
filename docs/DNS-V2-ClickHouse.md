@@ -60,3 +60,14 @@ docker exec dns-v2-clickhouse clickhouse-client --query 'SELECT match_status,cou
 ## 四层结构化事件采集（2026-11-14）
 
 详见 [DNS V2 四层原始事件采集与验收](DNS-V2-Layered-Raw-Events.md)。L1 dnstap、L2 fanout 竞速决策与分支结果、L3 rripfilter 逐次过滤、L4 dnsproxy DoH 交换已分别写入 ClickHouse 30 天事件表；V2 页面展示胜出率、过滤事件、TOP 域名/来源和数据新鲜度。注意 Unbound 看到的 192.168.0.59 可能是 DNS 转发器而非真实终端。
+
+## Unbound 原生缓存/递归统计（2026-11-14）
+
+- local-57 已开启 `prefetch: yes`，`cache-min-ttl: 0` 和 `serve-expired: no` 不变。配置备份：`/home/duobeigw/dns-lab/conf/unbound.conf.pre-prefetch-20261114`。
+- 管理接口仅使用 Unix Socket `/home/duobeigw/dns-lab/run/unbound-control.sock`，`control-use-cert: no` 仅适用于本地 Unix Socket，未开放 TCP 8953。配置备份：`conf/unbound.conf.pre-control-20261114`。
+- 受限 SSH 用户 `dnsstat` 不直接拥有管理 Socket 权限；通过 `/etc/sudoers.d/dns-v2-unbound-stats` 仅允许以 `duobeigw` 身份执行固定的只读统计脚本 `scripts/v2_unbound_stats.py`。脚本与目录为 root 所有，不可由 dnsstat 修改。
+- local-193 的 `dns-v2-unbound-stats.timer` 每分钟约第 20 秒通过受限 SSH 拉取 `stats_noreset`；ClickHouse 表 `dns_v2.unbound_stats` 保留 30 天。
+- 原生采集字段：queries、cachehits、cachemiss、prefetch、expired、recursivereplies、requestlist avg/max/current/overwritten/exceeded、recursion avg/median、tcpusage、time.up。
+- V2 页面在每个时间窗口取**窗口内首尾两个采样点**的计数器差值，计算 `Δcachehits/(Δcachehits+Δcachemiss)`；单个样本显示“样本不足”，Unbound 重启后 uptime 回退或计数器回退时不跨重启计算。
+- `prefetch` 是后台预取触发计数，不是缓存命中；`requestlist.exceeded` 是请求队列超限计数。递归平均/中位耗时来自最新原生累计统计，并非窗口内的递归耗时分位数。
+- 验收：管理接口返回真实计数器；第一次采集和后续采集写入 ClickHouse 成功，定时器 active，V2 页面 HTTP 200。
