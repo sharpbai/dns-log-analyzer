@@ -16,10 +16,11 @@ def ingest(source):
         print(f'WARNING {source}: rotation/truncation; previous offset={state["offset"]}',flush=True)
     events=batch['events']
     if events:
-        payload=''.join(json.dumps(dict(zip(FIELDS,event)),separators=(',',':'))+'\n' for event in events)
-        subprocess.run(['docker','exec','-i','dns-v2-clickhouse','clickhouse-client',
+        payload=''.join(json.dumps(dict(zip(FIELDS,[event[0].replace('T',' ').replace('+00:00','')]+event[1:])),separators=(',',':'))+'\n' for event in events)
+        result=subprocess.run(['docker','exec','-i','dns-v2-clickhouse','clickhouse-client',
           '--query','INSERT INTO dns_v2.events FORMAT JSONEachRow'],input=payload,text=True,
-          capture_output=True,timeout=60,check=True)
+          capture_output=True,timeout=60)
+        if result.returncode:raise RuntimeError('ClickHouse insert failed: '+result.stderr[:1200])
     new={'inode':batch['inode'],'offset':batch['offset']}
     fd,tmp=tempfile.mkstemp(prefix='.'+source,dir=STATE)
     try:
