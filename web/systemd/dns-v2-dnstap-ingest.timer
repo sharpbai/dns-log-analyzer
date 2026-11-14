@@ -1,0 +1,9 @@
+[Unit]
+Description=Pull Unbound dnstap every minute
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=5s
+Persistent=true
+Unit=dns-v2-dnstap-ingest.service
+[Install]
+WantedBy=timers.target

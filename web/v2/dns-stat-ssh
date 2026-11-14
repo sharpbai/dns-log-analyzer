@@ -12,6 +12,14 @@ case "$cmd" in
     ;;
 esac
 case "$cmd" in
+  v2-dnstap-list)
+    exec /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_dnstap_export.py list ;;
+  v2-dnstap-file\ *)
+    set -- $cmd
+    if [ "$#" -ne 2 ]; then echo 'invalid arguments' >&2; exit 2; fi
+    exec /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_dnstap_export.py file "$2" ;;
+esac
+case "$cmd" in
   minute1|minute5) exec /usr/local/bin/dns-summary "$SSH_ORIGINAL_COMMAND" --json --aggregate-only --exact-short ;;
   today|yesterday|week|month|last7) exec /usr/local/bin/dns-summary "$SSH_ORIGINAL_COMMAND" --json --aggregate-only ;;
   v2-minute1) exec /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_summary.py --db /var/lib/dns-log-analyzer/requests.sqlite3 --minutes 1 ;;

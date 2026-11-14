@@ -1,0 +1,11 @@
+[Unit]
+Description=Ingest Unbound dnstap completed files into ClickHouse
+After=network-online.target docker.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/dns-v2-dnstap-ingest.py
+TimeoutStartSec=55
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dns-v2-ingest
