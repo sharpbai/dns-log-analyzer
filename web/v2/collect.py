@@ -34,25 +34,35 @@ def ch_rows(query):
     result=subprocess.run(["docker","exec","dns-v2-clickhouse","clickhouse-client","--query",query+" FORMAT JSONEachRow"],capture_output=True,text=True,timeout=20,check=True)
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
 def unbound_cache_stats(start,end):
-    def snapshot(ts):
-        stamp=datetime.fromisoformat(ts.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
-        rows=ch_rows("SELECT sampled_at,uptime_seconds,queries,cachehits,cachemiss,prefetch,recursivereplies,requestlist_exceeded,requestlist_overwritten,requestlist_current,recursion_avg_seconds,recursion_median_seconds FROM dns_v2.unbound_stats WHERE sampled_at <= '"+stamp+"' ORDER BY sampled_at DESC LIMIT 1")
-        return rows[0] if rows else None
-    # Compare first and last samples actually inside the requested window; never
-    # fabricate a rate from a single cumulative sample.
+    # The sample cadence is one minute. Include the immediately preceding
+    # sample, otherwise a rolling 1m window almost always contains only one.
     a=datetime.fromisoformat(start.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
     b=datetime.fromisoformat(end.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
-    rows=ch_rows("SELECT sampled_at,uptime_seconds,queries,cachehits,cachemiss,prefetch,recursivereplies,requestlist_exceeded,requestlist_overwritten,requestlist_current,recursion_avg_seconds,recursion_median_seconds FROM dns_v2.unbound_stats WHERE sampled_at >= '"+a+"' AND sampled_at < '"+b+"' ORDER BY sampled_at")
-    if not rows:return {'status':'no_samples'}
-    latest=rows[-1]
-    result={'status':'insufficient_samples','samples':len(rows),'latest':latest}
+    fields='sampled_at,uptime_seconds,queries,cachehits,cachemiss,prefetch,recursivereplies,requestlist_exceeded,requestlist_overwritten,requestlist_current,recursion_avg_seconds,recursion_median_seconds'
+    prior=ch_rows(f"SELECT {fields} FROM dns_v2.unbound_stats WHERE sampled_at < '{a}' ORDER BY sampled_at DESC LIMIT 1")
+    inside=ch_rows(f"SELECT {fields} FROM dns_v2.unbound_stats WHERE sampled_at >= '{a}' AND sampled_at < '{b}' ORDER BY sampled_at")
+    rows=prior+inside
+    if not inside:return {'status':'no_samples','samples':0}
+    latest=inside[-1]
+    result={'status':'insufficient_samples','samples':len(inside),'latest':latest}
     if len(rows)<2:return result
-    first=rows[0]
-    if latest['uptime_seconds']<=first['uptime_seconds'] or any(latest[k]<first[k] for k in ('queries','cachehits','cachemiss','prefetch')):
-        result['status']='counter_reset';return result
-    delta={k:int(latest[k]-first[k]) for k in ('queries','cachehits','cachemiss','prefetch','recursivereplies','requestlist_exceeded','requestlist_overwritten')}
+    keys=('queries','cachehits','cachemiss','prefetch','recursivereplies','requestlist_exceeded','requestlist_overwritten')
+    delta={k:0 for k in keys}
+    valid=0; resets=0
+    for old,new in zip(rows,rows[1:]):
+        old_ts=datetime.fromisoformat(old['sampled_at'].replace(' ','T'))
+        new_ts=datetime.fromisoformat(new['sampled_at'].replace(' ','T'))
+        # Avoid comparing samples separated by a collection outage.
+        if not 0<(new_ts-old_ts).total_seconds()<=150:continue
+        if new['uptime_seconds']<=old['uptime_seconds'] or any(new[k]<old[k] for k in keys):
+            resets+=1
+            continue
+        for k in keys:delta[k]+=int(new[k]-old[k])
+        valid+=1
     denom=delta['cachehits']+delta['cachemiss']
-    result.update(status='ready' if denom else 'no_queries',delta=delta,hit_rate=round(100*delta['cachehits']/denom,2) if denom else None)
+    result.update(status='ready' if denom else ('counter_reset' if resets else 'no_queries'),
+                  delta=delta,hit_rate=round(100*delta['cachehits']/denom,2) if denom else None,
+                  valid_intervals=valid,reset_intervals=resets)
     return result
 
 def source_health():
