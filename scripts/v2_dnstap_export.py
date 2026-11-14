@@ -74,6 +74,7 @@ def decode(frame):
     dnsid,domain,qtype,qclass,rcode=dns_fields(packet)
     sec=m.get(8 if kind==5 else 12)
     ns=m.get(9 if kind==5 else 13,0)
+    if isinstance(ns,bytes):ns=int.from_bytes(ns,'little')
     if sec is None:return None
     ip=str(ipaddress.ip_address(m[4]))
     port=m.get(6,0)
