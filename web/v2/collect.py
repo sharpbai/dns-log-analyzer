@@ -90,6 +90,26 @@ def domestic_filter_details(start,end):
     r['top_dropped_domains']=tops
     return r
 
+def entrance_failure_domains(start,end):
+    """Rank final L1 Unbound dnstap response failures, not upstream attempts.
+
+    RCODE is stored as a numeric string. NXDOMAIN (3) is not a DNS
+    infrastructure failure; do not include it in this ranking.
+    """
+    a=datetime.fromisoformat(start.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+    b=datetime.fromisoformat(end.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+    return ch_rows(
+        "SELECT domain,count() AS failures,"
+        "countIf(rcode='2') AS servfail,"
+        "countIf(rcode='5') AS refused,"
+        "countIf(rcode='1') AS formerr,"
+        "countIf(rcode='4') AS notimp "
+        "FROM dns_v2.events "
+        f"WHERE event_time >= '{a}' AND event_time < '{b}' "
+        "AND source='unbound_dnstap' AND rcode IN ('2','5','1','4') "
+        "AND domain != '' "
+        "GROUP BY domain ORDER BY failures DESC, domain ASC LIMIT 5")
+
 def overseas_branch_health(start,end):
     a=datetime.fromisoformat(start.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
     b=datetime.fromisoformat(end.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
@@ -184,6 +204,7 @@ for period in (1,5,60,1440):
     data["cache_stats"]=unbound_cache_stats(data["window"]["start"],data["window"]["end"])
     data["global"]["cache_flag_rate"]=data["cache_stats"].get("hit_rate")
     data["domestic_filter_details"]=domestic_filter_details(data["window"]["start"],data["window"]["end"])
+    data["entrance_failure_domains"]=entrance_failure_domains(data["window"]["start"],data["window"]["end"])
     data["overseas_branch_health"]=overseas_branch_health(data["window"]["start"],data["window"]["end"])
     data["dnsproxy_health"]=dnsproxy_health(data["window"]["start"],data["window"]["end"])
     data["details"]=layer_details(data["window"]["start"],data["window"]["end"])
