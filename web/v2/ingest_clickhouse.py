@@ -21,6 +21,19 @@ def ingest(source):
           '--query','INSERT INTO dns_v2.events FORMAT JSONEachRow'],input=payload,text=True,
           capture_output=True,timeout=60)
         if result.returncode:raise RuntimeError('ClickHouse insert failed: '+result.stderr[:1200])
+    details=batch.get('details',[])
+    if details:
+        table='fanout_decisions' if source=='fanout' else 'rripfilter_events'
+        normalized=[]
+        for detail in details:
+            row={'event_time':detail['ts'].replace('T',' ').replace('Z','').split('+')[0], 'event_id':detail['event_id']}
+            for key,value in detail.items():
+                if key not in ('ts','event_id'):row[key]=value
+            normalized.append(json.dumps(row,separators=(',',':')))
+        p=subprocess.run(['docker','exec','-i','dns-v2-clickhouse','clickhouse-client','--query',
+          'INSERT INTO dns_v2.'+table+' FORMAT JSONEachRow'],input='\n'.join(normalized)+'\n',
+          capture_output=True,text=True,timeout=60)
+        if p.returncode:raise RuntimeError('ClickHouse '+table+' insert failed: '+p.stderr[:1200])
     new={'inode':batch['inode'],'offset':batch['offset']}
     fd,tmp=tempfile.mkstemp(prefix='.'+source,dir=STATE)
     try:

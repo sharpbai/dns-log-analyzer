@@ -29,6 +29,7 @@ def export(source,inode,offset,max_bytes=1048576):
     if offset>stat.st_size:
         return {'rotation':True,'inode':stat.st_ino,'offset':0,'events':[]}
     events=[]
+    details=[]
     with path.open('rb') as f:
         f.seek(offset)
         stop=min(stat.st_size,offset+max_bytes)
@@ -38,13 +39,21 @@ def export(source,inode,offset,max_bytes=1048576):
             if not raw.endswith(b'\n'):
                 f.seek(pos)
                 break
-            item=parse(source,raw.decode('utf-8','replace').rstrip())
+            line=raw.decode('utf-8','replace').rstrip()
+            tag='dns_v2_fanout ' if source=='fanout' else 'dns_v2_rripfilter ' if source=='domestic' else ''
+            if tag and tag in line:
+                try:
+                    detail=json.loads(line.split(tag,1)[1])
+                    detail['event_id']=int.from_bytes(hashlib.blake2b(f'{source}:{stat.st_ino}:{pos}'.encode(),digest_size=8).digest(),'big')
+                    details.append(detail)
+                except (ValueError,KeyError):pass
+            item=parse(source,line)
             if item:
                 key=f'{source}:{stat.st_ino}:{pos}'.encode()
                 item.append(int.from_bytes(hashlib.blake2b(key,digest_size=8).digest(),'big'))
                 events.append(item)
         next_offset=f.tell()
-    return {'rotation':False,'inode':stat.st_ino,'offset':next_offset,'events':events}
+    return {'rotation':False,'inode':stat.st_ino,'offset':next_offset,'events':events,'details':details}
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--source',required=True,choices=PATHS)
