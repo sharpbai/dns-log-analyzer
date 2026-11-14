@@ -33,6 +33,22 @@ def unbound_from_clickhouse(start,end):
 def ch_rows(query):
     result=subprocess.run(["docker","exec","dns-v2-clickhouse","clickhouse-client","--query",query+" FORMAT JSONEachRow"],capture_output=True,text=True,timeout=20,check=True)
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+def source_health():
+    tables=('events','fanout_decisions','fanout_upstream_events','rripfilter_events','overseas_exchanges')
+    now=datetime.now(timezone.utc)
+    out={}
+    for table in tables:
+        extra=" WHERE source='unbound_dnstap'" if table=='events' else ''
+        rows=ch_rows(f"SELECT max(event_time) AS latest,count() AS n FROM dns_v2.{table}"+extra)
+        row=rows[0] if rows else {}
+        latest=row.get('latest')
+        if latest and latest!='1970-01-01 00:00:00.000000':
+            stamp=datetime.fromisoformat(latest.replace(' ','T')).replace(tzinfo=timezone.utc)
+            lag=max(0,(now-stamp).total_seconds())
+        else:lag=None
+        out[table]={'latest':latest,'lag_seconds':round(lag) if lag is not None else None,'status':'ready' if lag is not None and lag<240 else 'stale'}
+    return out
+
 def layer_details(start,end):
     start=datetime.fromisoformat(start.replace("Z","+00:00")).strftime("%Y-%m-%d %H:%M:%S")
     end=datetime.fromisoformat(end.replace("Z","+00:00")).strftime("%Y-%m-%d %H:%M:%S")
@@ -50,6 +66,7 @@ TARGET=Path("/srv/dns-stat/current/v2/data")
 SSH=["/usr/bin/ssh","-i","/etc/dns-stat/id_ed25519","-o","BatchMode=yes",
      "-o","StrictHostKeyChecking=yes","-o","UserKnownHostsFile=/etc/dns-stat/known_hosts",
      "-o","ConnectTimeout=5","dnsstat@192.168.0.57"]
+health=source_health()
 for period in (1,5,60,1440):
     result=subprocess.run(SSH+[f"v2-minute{period}"],capture_output=True,text=True,timeout=25,check=True)
     data=json.loads(result.stdout)
@@ -62,6 +79,7 @@ for period in (1,5,60,1440):
     seconds=(end-start).total_seconds()
     global_data["qps"]=round(global_data["responses"]/seconds,3) if seconds>0 else None
     data["global"]=global_data
+    data["source_health"]=health
     data["details"]=layer_details(data["window"]["start"],data["window"]["end"])
     data["generated_at"]=datetime.now(timezone.utc).isoformat()
     fd,name=tempfile.mkstemp(prefix=f".minute{period}.",suffix=".tmp",dir=TARGET)
