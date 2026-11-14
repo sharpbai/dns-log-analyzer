@@ -97,11 +97,15 @@ def overseas_branch_health(start,end):
        "countIf(outcome='canceled') canceled,countIf(outcome='response' AND rcode=0) noerror,"
        "countIf(outcome='response' AND rcode=3) nxdomain,"
        "countIf(outcome='response' AND rcode=2) servfail,"
+       "quantileExactIf(0.5)(duration_us,outcome='response') p50,"
        "quantileExactIf(0.95)(duration_us,outcome='response') p95,"
-       "quantileExactIf(0.99)(duration_us,outcome='response') p99 "
+       "quantileExactIf(0.99)(duration_us,outcome='response') p99,"
+       "countIf(outcome='response' AND duration_us>=3000000) ge3s "
        "FROM dns_v2.fanout_upstream_events WHERE upstream='127.0.0.1:15404' "
        f"AND event_time >= '{a}' AND event_time < '{b}'")
     r=ch_rows(q)[0]
+    r['success_rate']=round(100*(r['noerror']+r['nxdomain'])/r['responses'],2) if r['responses'] else None
+    r['p50_ms']=round(r['p50']/1000,2) if r['responses'] else None
     r['p95_ms']=round(r['p95']/1000,2) if r['responses'] else None
     r['p99_ms']=round(r['p99']/1000,2) if r['responses'] else None
     return r
