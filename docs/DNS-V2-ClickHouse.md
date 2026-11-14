@@ -48,3 +48,11 @@ systemctl is-active dns-v2-dnstap-ingest.timer
 journalctl -u dns-v2-dnstap-ingest.service --no-pager -n 15
 docker exec dns-v2-clickhouse clickhouse-client --query 'SELECT match_status,count() FROM dns_v2.events WHERE source = '\''unbound_dnstap'\'' GROUP BY match_status'
 ```
+
+## 2026-11-14：停止 Unbound 文本查询日志
+
+- local-57 生产配置 `conf/unbound.conf`：`log-queries: no`、`log-replies: no`、`log-servfail: no`；dnstap CLIENT_QUERY/CLIENT_RESPONSE 继续开启。变更前备份：`conf/unbound.conf.pre-no-text-20261114`。
+- `dns_log_analyzer/v2_watch.py` 已排除 Unbound stdout 采集，其余 fanout、domestic、rripfilter、overseas 继续使用现有采集。
+- local-193 `web/v2/collect.py` 从 ClickHouse `unbound_dnstap` 生成 L1 及全局入口统计，不再依赖旧文本 rollup。只有 matched 记录参与延迟分位数；缓存命中标志暂不可用。
+- 生产验证：网页 HTTP 200、V2 四窗口 JSON 正常、Unbound 解析正常、V1/V2 采集服务 active。V1 的 SmartDNS/dnsproxy 采集不受影响。
+- 尚未完成：fanout 决策日志、rripfilter 逐次过滤详情、overseas 完整原始事件的 ClickHouse 采集。现有聚合指标并不代表原始数据均已就绪。
