@@ -1,0 +1,10 @@
+/home/duobeigw/dns-lab/logs/dnsproxy-final.log {
+    daily
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su root root
+}

@@ -71,3 +71,9 @@ docker exec dns-v2-clickhouse clickhouse-client --query 'SELECT match_status,cou
 - V2 页面在每个时间窗口取**窗口内首尾两个采样点**的计数器差值，计算 `Δcachehits/(Δcachehits+Δcachemiss)`；单个样本显示“样本不足”，Unbound 重启后 uptime 回退或计数器回退时不跨重启计算。
 - `prefetch` 是后台预取触发计数，不是缓存命中；`requestlist.exceeded` 是请求队列超限计数。递归平均/中位耗时来自最新原生累计统计，并非窗口内的递归耗时分位数。
 - 验收：管理接口返回真实计数器；第一次采集和后续采集写入 ClickHouse 成功，定时器 active，V2 页面 HTTP 200。
+
+### DNSPROXY 最终响应口径（2026-11-14）
+
+`local-57` 新增 `dns-v2-dnsproxy-final.service`：通过只读环回 UDP 15404 抓包，按客户端端口、DNS ID、域名及 QTYPE 匹配请求/响应，每个最终 DNS 应答写一条 `dns_v2_dnsproxy_final` 日志到 `dnsproxy-final.log`。它**不**是四路上游交换日志，也不依赖 fanout 哪个分支胜出。当前仅覆盖 UDP；TCP 尚未采集，采集进程重启或丢包时可能遗漏请求。需定期检查采集进程和日志新鲜度。
+
+`local-193` 通过受限 SSH `v2-raw-overseas_final` 增量采集到 `dns_v2.dnsproxy_final_responses`，V2 L4 顶部五项指标由最终响应计算：`(NOERROR + NXDOMAIN) / 最终响应数`、P50/P95/P99、耗时 ≥3s 次数。下方四上游健康详情继续使用 `dns_v2.overseas_exchanges`。原生源文件：`scripts/v2_dnsproxy_final_capture.py`；部署单元：`ops/dns-v2-dnsproxy-final.service`；日志轮转：`ops/dns-v2-dnsproxy-final.logrotate`。

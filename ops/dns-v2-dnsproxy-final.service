@@ -1,0 +1,14 @@
+[Unit]
+Description=DNS V2 dnsproxy final UDP response observer
+After=network-online.target dns-lab-overseas.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 -u /usr/local/libexec/dns-v2-dnsproxy-final-capture.py
+Restart=always
+RestartSec=3
+StandardOutput=append:/home/duobeigw/dns-lab/logs/dnsproxy-final.log
+StandardError=journal
+[Install]
+WantedBy=multi-user.target
