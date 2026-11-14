@@ -90,6 +90,22 @@ def domestic_filter_details(start,end):
     r['top_dropped_domains']=tops
     return r
 
+def overseas_branch_health(start,end):
+    a=datetime.fromisoformat(start.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+    b=datetime.fromisoformat(end.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+    q=("SELECT count() total,countIf(outcome='response') responses,"
+       "countIf(outcome='canceled') canceled,countIf(outcome='response' AND rcode=0) noerror,"
+       "countIf(outcome='response' AND rcode=3) nxdomain,"
+       "countIf(outcome='response' AND rcode=2) servfail,"
+       "quantileExactIf(0.95)(duration_us,outcome='response') p95,"
+       "quantileExactIf(0.99)(duration_us,outcome='response') p99 "
+       "FROM dns_v2.fanout_upstream_events WHERE upstream='127.0.0.1:15404' "
+       f"AND event_time >= '{a}' AND event_time < '{b}'")
+    r=ch_rows(q)[0]
+    r['p95_ms']=round(r['p95']/1000,2) if r['responses'] else None
+    r['p99_ms']=round(r['p99']/1000,2) if r['responses'] else None
+    return r
+
 def dnsproxy_health(start,end):
     a=datetime.fromisoformat(start.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
     b=datetime.fromisoformat(end.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
@@ -171,6 +187,7 @@ for period in (1,5,60,1440):
     data["cache_stats"]=unbound_cache_stats(data["window"]["start"],data["window"]["end"])
     data["global"]["cache_flag_rate"]=data["cache_stats"].get("hit_rate")
     data["domestic_filter_details"]=domestic_filter_details(data["window"]["start"],data["window"]["end"])
+    data["overseas_branch_health"]=overseas_branch_health(data["window"]["start"],data["window"]["end"])
     data["dnsproxy_health"]=dnsproxy_health(data["window"]["start"],data["window"]["end"])
     data["details"]=layer_details(data["window"]["start"],data["window"]["end"])
     data["generated_at"]=datetime.now(timezone.utc).isoformat()
