@@ -30,6 +30,21 @@ def unbound_from_clickhouse(start,end):
     metrics={"requests":total,"rcode:SERVFAIL":servfail,"rcode:NXDOMAIN":nxdomain,"qtype:A":a,"qtype:AAAA":aaaa}
     return {"metrics":metrics,"latency_ms":latency}, {"responses":total,"latency_ms":{k:latency[k] for k in ("p50","p95","p99")},"failure_count":servfail,"failure_rate":round(100*servfail/total,3) if total else None,"cache_flag_hits":None,"cache_flag_rate":None,"qtypes":{"A":a,"AAAA":aaaa},"qps":None,"scope":"unbound_dnstap_responses","match_quality":{"matched":matched,"ambiguous":ambiguous,"unmatched_response":unmatched}}
 
+def ch_rows(query):
+    result=subprocess.run(["docker","exec","dns-v2-clickhouse","clickhouse-client","--query",query+" FORMAT JSONEachRow"],capture_output=True,text=True,timeout=20,check=True)
+    return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+def layer_details(start,end):
+    start=datetime.fromisoformat(start.replace("Z","+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+    end=datetime.fromisoformat(end.replace("Z","+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+    where=f"event_time >= '{start}' AND event_time < '{end}'"
+    def counts(table,column):
+        return {str(r["key"]):int(r["n"]) for r in ch_rows(f"SELECT {column} AS key,count() AS n FROM dns_v2.{table} WHERE {where} GROUP BY key")}
+    return {"fanout_winners":counts('fanout_decisions','winner'),"fanout_reasons":counts('fanout_decisions','reason'),
+      "fanout_upstream_outcomes":counts('fanout_upstream_events','outcome'),"filter_actions":counts('rripfilter_events','action'),
+      "overseas_upstreams":counts('overseas_exchanges','upstream'),
+      "top_domains":ch_rows(f"SELECT domain,count() AS n FROM dns_v2.events WHERE {where} AND source='unbound_dnstap' GROUP BY domain ORDER BY n DESC LIMIT 5"),
+      "top_clients":ch_rows(f"SELECT client_ip,count() AS n FROM dns_v2.events WHERE {where} AND source='unbound_dnstap' GROUP BY client_ip ORDER BY n DESC LIMIT 5")}
+
 from pathlib import Path
 TARGET=Path("/srv/dns-stat/current/v2/data")
 SSH=["/usr/bin/ssh","-i","/etc/dns-stat/id_ed25519","-o","BatchMode=yes",
@@ -47,6 +62,7 @@ for period in (1,5,60,1440):
     seconds=(end-start).total_seconds()
     global_data["qps"]=round(global_data["responses"]/seconds,3) if seconds>0 else None
     data["global"]=global_data
+    data["details"]=layer_details(data["window"]["start"],data["window"]["end"])
     data["generated_at"]=datetime.now(timezone.utc).isoformat()
     fd,name=tempfile.mkstemp(prefix=f".minute{period}.",suffix=".tmp",dir=TARGET)
     try:
