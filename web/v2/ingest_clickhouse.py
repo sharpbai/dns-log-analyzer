@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pull bounded DNS raw events from local-57; checkpoint only after CH acknowledgement."""
 import json,os,re,subprocess,tempfile
+from datetime import datetime,timezone
 from pathlib import Path
 STATE=Path('/var/lib/dns-v2-ingest')
 SSH=['/usr/bin/ssh','-i','/etc/dns-stat/id_ed25519','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile=/etc/dns-stat/known_hosts','-o','ConnectTimeout=5','dnsstat@192.168.0.57']
@@ -23,10 +24,10 @@ def ingest(source):
         if result.returncode:raise RuntimeError('ClickHouse insert failed: '+result.stderr[:1200])
     details=batch.get('details',[])
     if details:
-        table='fanout_decisions' if source=='fanout' else 'rripfilter_events'
+        table={'fanout':'fanout_decisions','domestic':'rripfilter_events','overseas':'overseas_exchanges'}[source]
         normalized=[]
         for detail in details:
-            row={'event_time':detail['ts'].replace('T',' ').replace('Z','').split('+')[0], 'event_id':detail['event_id']}
+            row={'event_time':datetime.fromisoformat(detail['ts'].replace('Z','+00:00')).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'), 'event_id':detail['event_id']}
             for key,value in detail.items():
                 if key not in ('ts','event_id'):row[key]=value
             normalized.append(json.dumps(row,separators=(',',':')))
@@ -44,7 +45,7 @@ def ingest(source):
     return len(events),new['offset']
 def main():
     STATE.mkdir(parents=True,exist_ok=True)
-    for source in ('fanout','domestic'):
+    for source in ('fanout','domestic','overseas'):
         count,offset=ingest(source)
         print(source,count,offset,flush=True)
 if __name__=='__main__':main()

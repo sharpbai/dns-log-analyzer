@@ -2,9 +2,9 @@
 # Forced-command read-only gateway for local-193.
 cmd="${SSH_ORIGINAL_COMMAND:-}"
 case "$cmd" in
-  v2-raw-unbound\ *|v2-raw-fanout\ *|v2-raw-domestic\ *)
+  v2-raw-unbound\ *|v2-raw-fanout\ *|v2-raw-domestic\ *|v2-raw-overseas\ *)
     set -- $cmd
-    case "$1" in v2-raw-unbound) source=unbound;; v2-raw-fanout) source=fanout;; v2-raw-domestic) source=domestic;; esac
+    case "$1" in v2-raw-unbound) source=unbound;; v2-raw-fanout) source=fanout;; v2-raw-domestic) source=domestic;; v2-raw-overseas) source=overseas;; esac
     case "${2:-}" in ''|*[!0-9]*) echo 'invalid inode' >&2; exit 2;; esac
     case "${3:-}" in ''|*[!0-9]*) echo 'invalid offset' >&2; exit 2;; esac
     if [ "$#" -ne 3 ]; then echo 'invalid arguments' >&2; exit 2; fi

@@ -4,6 +4,8 @@ import argparse,datetime as dt,hashlib,json,re
 from pathlib import Path
 BASE=Path('/home/duobeigw/dns-lab/logs')
 PATHS={s:BASE/(s+'.stdout') for s in ('unbound','fanout','domestic')}
+PATHS['overseas']=BASE/'dnsproxy.log'
+OVERSEAS=re.compile(r'^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d+) DEBUG upstream exchange completed addr=(\S+) proto=(\S+) qtype=(\S+) qname=(\S+) id=(\d+) duration=([\d.]+)(ms|s|µs|us) status=(\S+)')
 UNBOUND=re.compile(r'^\[(\d+)\].*? info: (\S+) (\S+) (\S+) IN (\S+) ([\d.]+) ([01]) (\d+)$')
 COREDNS=re.compile(r'^\[INFO\] (\S+) (\S+) - (\d+) "([^"]+)" (\S+) (\S+) (\d+) ([\d.]+)s')
 def parse(source,line):
@@ -23,6 +25,8 @@ def parse(source,line):
 def export(source,inode,offset,max_bytes=1048576):
     path=PATHS[source]
     stat=path.stat()
+    if source=='overseas' and inode==0 and offset==0:
+        return {'rotation':False,'inode':stat.st_ino,'offset':stat.st_size,'events':[],'details':[]}
     if inode and inode!=stat.st_ino:
         # Explicit rotation signal: do not silently skip a lost archive.
         return {'rotation':True,'inode':stat.st_ino,'offset':0,'events':[]}
@@ -30,6 +34,7 @@ def export(source,inode,offset,max_bytes=1048576):
         return {'rotation':True,'inode':stat.st_ino,'offset':0,'events':[]}
     events=[]
     details=[]
+    if source=='overseas':max_bytes=8388608
     with path.open('rb') as f:
         f.seek(offset)
         stop=min(stat.st_size,offset+max_bytes)
@@ -40,6 +45,14 @@ def export(source,inode,offset,max_bytes=1048576):
                 f.seek(pos)
                 break
             line=raw.decode('utf-8','replace').rstrip()
+            if source=='overseas':
+                match=OVERSEAS.match(line)
+                if match:
+                    stamp,addr,proto,qtype,qname,dnsid,duration,unit,status=match.groups()
+                    factor={'ms':1000,'s':1000000,'us':1,'µs':1}[unit]
+                    detail={'ts':stamp.replace('/','-').replace(' ','T')+'+08:00','domain':qname,'qtype':qtype,'dns_id':int(dnsid),'upstream':addr,'protocol':proto,'duration_us':int(float(duration)*factor),'status':status}
+                    detail['event_id']=int.from_bytes(hashlib.blake2b(f'{source}:{stat.st_ino}:{pos}'.encode(),digest_size=8).digest(),'big')
+                    details.append(detail)
             tag='dns_v2_fanout ' if source=='fanout' else 'dns_v2_rripfilter ' if source=='domestic' else ''
             if tag and tag in line:
                 try:
