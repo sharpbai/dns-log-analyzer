@@ -65,6 +65,31 @@ def unbound_cache_stats(start,end):
                   valid_intervals=valid,reset_intervals=resets)
     return result
 
+def domestic_filter_details(start,end):
+    a=datetime.fromisoformat(start.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+    b=datetime.fromisoformat(end.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+    where=f"event_time >= '{a}' AND event_time < '{b}'"
+    q=("SELECT count() total,countIf(action='accept') accept,countIf(action='bypass') bypass,"
+       "countIf(action='drop') drop_count,countIf(action='partial') partial,"
+       "countIf(action='upstream_error') upstream_error,countIf(action='transport_error') transport_error,"
+       "countIf(reason='all_filtered') all_filtered,countIf(reason='no_terminal_answer') no_terminal_answer,"
+       "countIf(upstream_rcode=2) upstream_servfail,countIf(upstream_rcode=3) upstream_nxdomain,"
+       "quantileExact(0.5)(filter_us) filter_p50,quantileExact(0.95)(filter_us) filter_p95,"
+       "quantileExact(0.99)(filter_us) filter_p99,quantileExact(0.95)(elapsed_us) elapsed_p95,"
+       "sum(arrayCount(x -> position(x, ':') = 0, rejected_ips)) rejected_ipv4,"
+       "sum(arrayCount(x -> position(x, ':') > 0, rejected_ips)) rejected_ipv6 "
+       f"FROM dns_v2.rripfilter_events WHERE {where}")
+    r=ch_rows(q)[0];total=int(r['total'])
+    tops=ch_rows("SELECT domain,count() drops,"
+                 "sum(arrayCount(x -> position(x, ':') = 0, rejected_ips)) rejected_ipv4,"
+                 "sum(arrayCount(x -> position(x, ':') > 0, rejected_ips)) rejected_ipv6 "
+                 f"FROM dns_v2.rripfilter_events WHERE {where} AND action='drop' "
+                 "GROUP BY domain ORDER BY drops DESC LIMIT 5")
+    r['accept_rate']=round(100*(r['accept']+r['bypass']+r['partial'])/total,2) if total else None
+    r['drop_rate']=round(100*r['drop_count']/total,2) if total else None
+    r['top_dropped_domains']=tops
+    return r
+
 def dnsproxy_health(start,end):
     a=datetime.fromisoformat(start.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
     b=datetime.fromisoformat(end.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
@@ -145,6 +170,7 @@ for period in (1,5,60,1440):
     data["source_health"]=health
     data["cache_stats"]=unbound_cache_stats(data["window"]["start"],data["window"]["end"])
     data["global"]["cache_flag_rate"]=data["cache_stats"].get("hit_rate")
+    data["domestic_filter_details"]=domestic_filter_details(data["window"]["start"],data["window"]["end"])
     data["dnsproxy_health"]=dnsproxy_health(data["window"]["start"],data["window"]["end"])
     data["details"]=layer_details(data["window"]["start"],data["window"]["end"])
     data["generated_at"]=datetime.now(timezone.utc).isoformat()
