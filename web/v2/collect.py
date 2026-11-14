@@ -65,6 +65,37 @@ def unbound_cache_stats(start,end):
                   valid_intervals=valid,reset_intervals=resets)
     return result
 
+def dnsproxy_health(start,end):
+    a=datetime.fromisoformat(start.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+    b=datetime.fromisoformat(end.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+    where=f"event_time >= '{a}' AND event_time < '{b}'"
+    upstreams=[('Cloudflare DoH','https://cloudflare-dns.com:443/dns-query'),('Google DoH','https://dns.google:443/dns-query'),('Cloudflare UDP','1.1.1.1:53'),('Google UDP','8.8.8.8:53')]
+    q=("SELECT upstream,count() total,countIf(status='ok') ok,"
+       "quantileExactIf(0.5)(duration_us,status='ok') p50,"
+       "quantileExactIf(0.95)(duration_us,status='ok') p95,"
+       "quantileExactIf(0.99)(duration_us,status='ok') p99,"
+       "countIf(duration_us>=1000000) ge1s,countIf(duration_us>=2000000) ge2s,"
+       "countIf(duration_us>=3000000) ge3s "
+       f"FROM dns_v2.overseas_exchanges WHERE {where} GROUP BY upstream")
+    by={r['upstream']:r for r in ch_rows(q)}
+    items=[]
+    for label,addr in upstreams:
+        r=by.get(addr);n=int(r['total']) if r else 0;ok=int(r['ok']) if r else 0
+        items.append(dict(name=label,address=addr,total=n,ok=ok,errors=n-ok,
+                          success_rate=round(100*ok/n,2) if n else None,
+                          p50=round(r['p50']/1000,2) if ok else None,
+                          p95=round(r['p95']/1000,2) if ok else None,
+                          p99=round(r['p99']/1000,2) if ok else None,
+                          ge1s=int(r['ge1s']) if r else 0,ge2s=int(r['ge2s']) if r else 0,
+                          ge3s=int(r['ge3s']) if r else 0))
+    # At most 60 buckets per window, to keep 24h snapshots small.
+    bucket=60 if (datetime.fromisoformat(b)-datetime.fromisoformat(a)).total_seconds()<=3600 else 1800
+    trend=ch_rows("SELECT toStartOfInterval(event_time,INTERVAL "+str(bucket)+" SECOND) bucket,upstream,"
+                  "quantileExactIf(0.95)(duration_us,status='ok')/1000 p95,countIf(status='ok') ok "
+                  f"FROM dns_v2.overseas_exchanges WHERE {where} AND upstream IN ("+
+                  ','.join("'"+x[1]+"'" for x in upstreams)+") GROUP BY bucket,upstream ORDER BY bucket")
+    return {'upstreams':items,'trend':[dict(time=r['bucket'],upstream=r['upstream'],p95=round(r['p95'],2) if r['ok'] else None,samples=r['ok']) for r in trend], 'bucket_seconds':bucket}
+
 def source_health():
     tables=('events','fanout_decisions','fanout_upstream_events','rripfilter_events','overseas_exchanges')
     now=datetime.now(timezone.utc)
@@ -114,6 +145,7 @@ for period in (1,5,60,1440):
     data["source_health"]=health
     data["cache_stats"]=unbound_cache_stats(data["window"]["start"],data["window"]["end"])
     data["global"]["cache_flag_rate"]=data["cache_stats"].get("hit_rate")
+    data["dnsproxy_health"]=dnsproxy_health(data["window"]["start"],data["window"]["end"])
     data["details"]=layer_details(data["window"]["start"],data["window"]["end"])
     data["generated_at"]=datetime.now(timezone.utc).isoformat()
     fd,name=tempfile.mkstemp(prefix=f".minute{period}.",suffix=".tmp",dir=TARGET)
