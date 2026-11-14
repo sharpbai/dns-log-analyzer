@@ -1,0 +1,9 @@
+[Unit]
+Description=Ingest DNS raw events into ClickHouse every minute
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=true
+AccuracySec=5s
+Unit=dns-v2-clickhouse-ingest.service
+[Install]
+WantedBy=timers.target

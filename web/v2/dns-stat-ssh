@@ -1,6 +1,17 @@
 #!/bin/sh
 # Forced-command read-only gateway for local-193.
-case "${SSH_ORIGINAL_COMMAND:-}" in
+cmd="${SSH_ORIGINAL_COMMAND:-}"
+case "$cmd" in
+  v2-raw-unbound\ *|v2-raw-fanout\ *|v2-raw-domestic\ *)
+    set -- $cmd
+    case "$1" in v2-raw-unbound) source=unbound;; v2-raw-fanout) source=fanout;; v2-raw-domestic) source=domestic;; esac
+    case "${2:-}" in ''|*[!0-9]*) echo 'invalid inode' >&2; exit 2;; esac
+    case "${3:-}" in ''|*[!0-9]*) echo 'invalid offset' >&2; exit 2;; esac
+    if [ "$#" -ne 3 ]; then echo 'invalid arguments' >&2; exit 2; fi
+    exec /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_raw_export.py --source "$source" --inode "$2" --offset "$3"
+    ;;
+esac
+case "$cmd" in
   minute1|minute5) exec /usr/local/bin/dns-summary "$SSH_ORIGINAL_COMMAND" --json --aggregate-only --exact-short ;;
   today|yesterday|week|month|last7) exec /usr/local/bin/dns-summary "$SSH_ORIGINAL_COMMAND" --json --aggregate-only ;;
   v2-minute1) exec /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_summary.py --db /var/lib/dns-log-analyzer/requests.sqlite3 --minutes 1 ;;

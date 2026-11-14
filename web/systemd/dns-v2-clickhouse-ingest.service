@@ -1,0 +1,15 @@
+[Unit]
+Description=Pull bounded DNS raw events into ClickHouse
+After=network-online.target docker.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/dns-v2-clickhouse-ingest.py
+TimeoutStartSec=55
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dns-v2-ingest
+ProtectHome=yes
