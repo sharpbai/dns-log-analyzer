@@ -56,3 +56,7 @@ docker exec dns-v2-clickhouse clickhouse-client --query 'SELECT match_status,cou
 - local-193 `web/v2/collect.py` 从 ClickHouse `unbound_dnstap` 生成 L1 及全局入口统计，不再依赖旧文本 rollup。只有 matched 记录参与延迟分位数；缓存命中标志暂不可用。
 - 生产验证：网页 HTTP 200、V2 四窗口 JSON 正常、Unbound 解析正常、V1/V2 采集服务 active。V1 的 SmartDNS/dnsproxy 采集不受影响。
 - 尚未完成：fanout 决策日志、rripfilter 逐次过滤详情、overseas 完整原始事件的 ClickHouse 采集。现有聚合指标并不代表原始数据均已就绪。
+
+## 四层结构化事件采集（2026-11-14）
+
+详见 [DNS V2 四层原始事件采集与验收](DNS-V2-Layered-Raw-Events.md)。L1 dnstap、L2 fanout 竞速决策与分支结果、L3 rripfilter 逐次过滤、L4 dnsproxy DoH 交换已分别写入 ClickHouse 30 天事件表；V2 页面展示胜出率、过滤事件、TOP 域名/来源和数据新鲜度。注意 Unbound 看到的 192.168.0.59 可能是 DNS 转发器而非真实终端。
