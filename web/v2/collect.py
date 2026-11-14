@@ -33,6 +33,28 @@ def unbound_from_clickhouse(start,end):
 def ch_rows(query):
     result=subprocess.run(["docker","exec","dns-v2-clickhouse","clickhouse-client","--query",query+" FORMAT JSONEachRow"],capture_output=True,text=True,timeout=20,check=True)
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+def unbound_cache_stats(start,end):
+    def snapshot(ts):
+        stamp=datetime.fromisoformat(ts.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+        rows=ch_rows("SELECT sampled_at,uptime_seconds,queries,cachehits,cachemiss,prefetch,recursivereplies,requestlist_exceeded,requestlist_overwritten,requestlist_current,recursion_avg_seconds,recursion_median_seconds FROM dns_v2.unbound_stats WHERE sampled_at <= '"+stamp+"' ORDER BY sampled_at DESC LIMIT 1")
+        return rows[0] if rows else None
+    # Compare first and last samples actually inside the requested window; never
+    # fabricate a rate from a single cumulative sample.
+    a=datetime.fromisoformat(start.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+    b=datetime.fromisoformat(end.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
+    rows=ch_rows("SELECT sampled_at,uptime_seconds,queries,cachehits,cachemiss,prefetch,recursivereplies,requestlist_exceeded,requestlist_overwritten,requestlist_current,recursion_avg_seconds,recursion_median_seconds FROM dns_v2.unbound_stats WHERE sampled_at >= '"+a+"' AND sampled_at < '"+b+"' ORDER BY sampled_at")
+    if not rows:return {'status':'no_samples'}
+    latest=rows[-1]
+    result={'status':'insufficient_samples','samples':len(rows),'latest':latest}
+    if len(rows)<2:return result
+    first=rows[0]
+    if latest['uptime_seconds']<=first['uptime_seconds'] or any(latest[k]<first[k] for k in ('queries','cachehits','cachemiss','prefetch')):
+        result['status']='counter_reset';return result
+    delta={k:int(latest[k]-first[k]) for k in ('queries','cachehits','cachemiss','prefetch','recursivereplies','requestlist_exceeded','requestlist_overwritten')}
+    denom=delta['cachehits']+delta['cachemiss']
+    result.update(status='ready' if denom else 'no_queries',delta=delta,hit_rate=round(100*delta['cachehits']/denom,2) if denom else None)
+    return result
+
 def source_health():
     tables=('events','fanout_decisions','fanout_upstream_events','rripfilter_events','overseas_exchanges')
     now=datetime.now(timezone.utc)
@@ -80,6 +102,8 @@ for period in (1,5,60,1440):
     global_data["qps"]=round(global_data["responses"]/seconds,3) if seconds>0 else None
     data["global"]=global_data
     data["source_health"]=health
+    data["cache_stats"]=unbound_cache_stats(data["window"]["start"],data["window"]["end"])
+    data["global"]["cache_flag_rate"]=data["cache_stats"].get("hit_rate")
     data["details"]=layer_details(data["window"]["start"],data["window"]["end"])
     data["generated_at"]=datetime.now(timezone.utc).isoformat()
     fd,name=tempfile.mkstemp(prefix=f".minute{period}.",suffix=".tmp",dir=TARGET)
