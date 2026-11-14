@@ -26,7 +26,7 @@ def ingest(source):
     if details:
         grouped={}
         for detail in details:
-            table={'fanout':'fanout_upstream_events' if detail.get('event_kind')=='upstream' else 'fanout_decisions','domestic':'rripfilter_events','overseas':'overseas_exchanges'}[source]
+            table={'fanout':'fanout_upstream_events' if detail.get('event_kind')=='upstream' else 'fanout_decisions','domestic':'rripfilter_events','overseas':'overseas_exchanges','overseas_final':'dnsproxy_final_responses'}[source]
             normalized=grouped.setdefault(table,[])
             row={'event_time':datetime.fromisoformat(detail['ts'].replace('Z','+00:00')).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'), 'event_id':detail['event_id']}
             for key,value in detail.items():
@@ -47,7 +47,7 @@ def ingest(source):
     return len(events),new['offset']
 def main():
     STATE.mkdir(parents=True,exist_ok=True)
-    for source in ('fanout','domestic','overseas'):
+    for source in ('fanout','domestic','overseas','overseas_final'):
         count,offset=ingest(source)
         print(source,count,offset,flush=True)
 if __name__=='__main__':main()

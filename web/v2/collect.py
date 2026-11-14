@@ -93,21 +93,14 @@ def domestic_filter_details(start,end):
 def overseas_branch_health(start,end):
     a=datetime.fromisoformat(start.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
     b=datetime.fromisoformat(end.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
-    q=("SELECT count() total,countIf(outcome='response') responses,"
-       "countIf(outcome='canceled') canceled,countIf(outcome='response' AND rcode=0) noerror,"
-       "countIf(outcome='response' AND rcode=3) nxdomain,"
-       "countIf(outcome='response' AND rcode=2) servfail,"
-       "quantileExactIf(0.5)(duration_us,outcome='response') p50,"
-       "quantileExactIf(0.95)(duration_us,outcome='response') p95,"
-       "quantileExactIf(0.99)(duration_us,outcome='response') p99,"
-       "countIf(outcome='response' AND duration_us>=3000000) ge3s "
-       "FROM dns_v2.fanout_upstream_events WHERE upstream='127.0.0.1:15404' "
-       f"AND event_time >= '{a}' AND event_time < '{b}'")
-    r=ch_rows(q)[0]
-    r['success_rate']=round(100*(r['noerror']+r['nxdomain'])/r['responses'],2) if r['responses'] else None
-    r['p50_ms']=round(r['p50']/1000,2) if r['responses'] else None
-    r['p95_ms']=round(r['p95']/1000,2) if r['responses'] else None
-    r['p99_ms']=round(r['p99']/1000,2) if r['responses'] else None
+    q=("SELECT count() responses,countIf(rcode=0) noerror,countIf(rcode=3) nxdomain,"
+       "countIf(rcode=2) servfail,quantileExact(0.5)(duration_us) p50,"
+       "quantileExact(0.95)(duration_us) p95,quantileExact(0.99)(duration_us) p99,"
+       "countIf(duration_us>=3000000) ge3s "
+       f"FROM dns_v2.dnsproxy_final_responses WHERE event_time >= '{a}' AND event_time < '{b}'")
+    r=ch_rows(q)[0];n=r['responses']
+    r['success_rate']=round(100*(r['noerror']+r['nxdomain'])/n,2) if n else None
+    for k in ('p50','p95','p99'):r[k+'_ms']=round(r[k]/1000,2) if n else None
     return r
 
 def dnsproxy_health(start,end):
@@ -142,7 +135,7 @@ def dnsproxy_health(start,end):
     return {'upstreams':items,'trend':[dict(time=r['bucket'],upstream=r['upstream'],p95=round(r['p95'],2) if r['ok'] else None,samples=r['ok']) for r in trend], 'bucket_seconds':bucket}
 
 def source_health():
-    tables=('events','fanout_decisions','fanout_upstream_events','rripfilter_events','overseas_exchanges')
+    tables=('events','fanout_decisions','fanout_upstream_events','rripfilter_events','overseas_exchanges','dnsproxy_final_responses')
     now=datetime.now(timezone.utc)
     out={}
     for table in tables:

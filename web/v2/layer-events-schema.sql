@@ -31,3 +31,18 @@ CREATE TABLE IF NOT EXISTS dns_v2.rripfilter_events (
 PARTITION BY toYYYYMMDD(event_time)
 ORDER BY (event_time,event_id)
 TTL toDateTime(event_time) + INTERVAL 30 DAY DELETE;
+
+CREATE TABLE IF NOT EXISTS dns_v2.dnsproxy_final_responses (
+ event_time DateTime64(6,'UTC'),
+ domain String,
+ qtype UInt16,
+ dns_id UInt16,
+ rcode UInt16,
+ duration_us UInt64,
+ protocol LowCardinality(String),
+ event_id UInt64,
+ ingested_at DateTime DEFAULT now()
+) ENGINE=ReplacingMergeTree(ingested_at)
+PARTITION BY toYYYYMMDD(event_time)
+ORDER BY (event_time,event_id)
+TTL toDateTime(event_time) + INTERVAL 30 DAY DELETE;
