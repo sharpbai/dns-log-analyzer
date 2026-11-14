@@ -14,7 +14,7 @@
 <div class="tile"><small>国内 / 海外胜出率</small><strong id="winner">待接入</strong></div>
 <div class="tile"><small>L1 响应 A / AAAA</small><strong id="qtype">待接入</strong></div>
 <div class="tile"><small>TOP 域名</small><strong id="top-domain">待接入</strong></div>
-<div class="tile"><small>TOP 客户端</small><strong id="top-client">待接入</strong></div></div>
+<div class="tile"><small>TOP DNS 来源（含转发器）</small><strong id="top-client">待接入</strong></div></div>
 <div class="flow"><div class="node">客户端</div><span class="arrow">→</span><div class="node">L1 Unbound 缓存</div><span class="arrow">→</span><div class="node">L2 CoreDNS fanout</div><span class="arrow">↗</span><div class="node">L3 国内 rripfilter</div><span class="arrow">/</span><div class="node">L4 海外 dnsproxy</div></div>
 <div class="note">总览指标必须使用可验证的客户端入口及竞速结果数据；不能把 L1/L2/L3/L4 内部事件量相加当作Unbound 入口 QPS。NXDOMAIN 不计入系统失败。</div></section>
 <section class="panel"><h2>01 / L1 UNBOUND · 缓存层</h2><div class="split"><div class="tile"><small>完整解析响应</small><strong id="u-count">—</strong></div><div class="tile"><small>递归响应 P99</small><strong id="u-p99">—</strong></div></div><div id="unbound"></div><div class="bar-track"><div class="bar-fill" id="cachebar"></div></div><div class="note">dnstap 不直接提供缓存命中标志，当前暂不展示。响应延迟仅统计成功关联的请求。</div></section>
