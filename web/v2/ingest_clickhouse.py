@@ -31,7 +31,7 @@ def ingest(source):
     return len(events),new['offset']
 def main():
     STATE.mkdir(parents=True,exist_ok=True)
-    for source in ('unbound','fanout','domestic'):
+    for source in ('fanout','domestic'):
         count,offset=ingest(source)
         print(source,count,offset,flush=True)
 if __name__=='__main__':main()

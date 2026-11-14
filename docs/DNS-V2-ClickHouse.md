@@ -29,3 +29,22 @@ docker exec dns-v2-clickhouse clickhouse-client --query 'SELECT database,table,s
 容量基线：初始 15,658 条事件在 ClickHouse events 表的活动数据压缩约 495 KB（约 31.6 B/事件，不包含元数据、系统日志、临时分区和未来过滤明细）。不能据此直接承诺 30 天的最终总空间。
 
 恢复：服务停止后保留持久化数据目录；游标文件需与数据备份一致，避免重放或漏采。数据库没有对外开放端口。
+
+## Unbound dnstap 请求-响应关联（2026-11-14）
+
+生产 Unbound 1.17.1 已启用 `dnstap` 的 CLIENT_QUERY/CLIENT_RESPONSE；捕获服务 `dns-v2-dnstap-capture.service` 通过 `fstrm_capture` 将二进制帧按约一分钟分文件写入 `/home/duobeigw/dns-lab/logs/dnstap/`。此项变更经过独立 15553 端口隔离验证，生产配置备份位于 `conf/unbound.conf.pre-dnstap-20261114`。
+
+- local-57：`scripts/v2_dnstap_export.py` 解析 Frame Streams + protobuf wire，DNS 报文头、问题域名及 ns 时间戳。匹配键为客户端 IP/端口、传输协议、DNS ID、域名、类型、类，窗口 5 秒。
+- local-193：`dns-v2-dnstap-ingest.timer` 每分钟经受限 SSH 拉取**已关闭**的文件，逐文件写入 ClickHouse，确认成功后记录文件名游标 `/var/lib/dns-v2-ingest/dnstap-files.json`。事件来源 `unbound_dnstap`，包含 `query_time`、`match_status`、`client_port`、`dns_id`、`protocol`。
+- 原始 dnstap 二进制文件由 `dns-v2-dnstap-prune.timer` 每 15 分钟删除修改时间超过 240 分钟的文件；结构化数据仍按 ClickHouse 30 天 TTL 保存。
+- 初次生产样本：1,483 条响应中 matched 1,429（96.36%）、ambiguous 48（3.24%）、unmatched_response 6（0.40%）。**不是 100% 无损保证**，文件跨分钟边界和 DNS ID 重复可造成歧义；统计耗时仅使用 matched。
+- 旧的 Unbound 文本日志继续存在，V1/V2 分钟聚合不变；但 ClickHouse 原始 Unbound 文本导入停止，后续新事件只用 `unbound_dnstap`，避免重复长期存储。旧 `unbound` 表记录自然随 TTL 到期。
+
+检查命令：
+
+```sh
+systemctl is-active dns-v2-dnstap-capture.service dns-lab-unbound.service dns-v2-dnstap-prune.timer
+systemctl is-active dns-v2-dnstap-ingest.timer
+journalctl -u dns-v2-dnstap-ingest.service --no-pager -n 15
+docker exec dns-v2-clickhouse clickhouse-client --query 'SELECT match_status,count() FROM dns_v2.events WHERE source = '\''unbound_dnstap'\'' GROUP BY match_status'
+```
