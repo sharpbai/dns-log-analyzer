@@ -5,6 +5,31 @@ import os
 import subprocess
 import tempfile
 from datetime import datetime,timezone
+BOUNDS=(1,5,10,25,50,100,200,500,1000,2000,3000,5000)
+def unbound_from_clickhouse(start,end):
+    start=datetime.fromisoformat(start.replace("Z","+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+    end=datetime.fromisoformat(end.replace("Z","+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+    where=f"source = 'unbound_dnstap' AND event_time >= '{start}' AND event_time < '{end}'"
+    query=("SELECT count(),countIf(rcode = '2'),countIf(rcode = '3'),"
+           "countIf(qtype = '1'),countIf(qtype = '28'),"
+           "quantileExactIf(0.5)(duration_us,match_status = 'matched'),"
+           "quantileExactIf(0.95)(duration_us,match_status = 'matched'),"
+           "quantileExactIf(0.99)(duration_us,match_status = 'matched'),"
+           "countIf(match_status = 'matched'),countIf(match_status = 'ambiguous'),"
+           "countIf(match_status = 'unmatched_response') FROM dns_v2.events WHERE "+where+" FORMAT JSONEachRow")
+    cmd=["docker","exec","dns-v2-clickhouse","clickhouse-client","--query",query]
+    result=subprocess.run(cmd,capture_output=True,text=True,timeout=20,check=True)
+    vals=list(json.loads(result.stdout).values())
+    total,servfail,nxdomain,a,aaaa,p50,p95,p99,matched,ambiguous,unmatched=vals
+    bins_query=("SELECT multiIf("+" ,".join(f"duration_us < {b*1000},{i}" for i,b in enumerate(BOUNDS))+f",{len(BOUNDS)}) AS bucket,count() AS n FROM dns_v2.events WHERE "+where+" AND match_status = 'matched' GROUP BY bucket FORMAT JSONEachRow")
+    b=subprocess.run(["docker","exec","dns-v2-clickhouse","clickhouse-client","--query",bins_query],capture_output=True,text=True,timeout=20,check=True)
+    counts=[0]*(len(BOUNDS)+1)
+    for line in b.stdout.splitlines():
+        entry=json.loads(line);counts[int(entry["bucket"])]=int(entry["n"])
+    latency={"bounds_ms":BOUNDS,"counts":counts,"total":matched,"p50":p50/1000 if matched else None,"p95":p95/1000 if matched else None,"p99":p99/1000 if matched else None,"ge3s":sum(counts[BOUNDS.index(3000)+1:])}
+    metrics={"requests":total,"rcode:SERVFAIL":servfail,"rcode:NXDOMAIN":nxdomain,"qtype:A":a,"qtype:AAAA":aaaa}
+    return {"metrics":metrics,"latency_ms":latency}, {"responses":total,"latency_ms":{k:latency[k] for k in ("p50","p95","p99")},"failure_count":servfail,"failure_rate":round(100*servfail/total,3) if total else None,"cache_flag_hits":None,"cache_flag_rate":None,"qtypes":{"A":a,"AAAA":aaaa},"qps":None,"scope":"unbound_dnstap_responses","match_quality":{"matched":matched,"ambiguous":ambiguous,"unmatched_response":unmatched}}
+
 from pathlib import Path
 TARGET=Path("/srv/dns-stat/current/v2/data")
 SSH=["/usr/bin/ssh","-i","/etc/dns-stat/id_ed25519","-o","BatchMode=yes",
@@ -15,6 +40,13 @@ for period in (1,5,60,1440):
     data=json.loads(result.stdout)
     if not isinstance(data.get("layers"),dict) or not isinstance(data.get("window"),dict):
         raise ValueError("Invalid V2 snapshot")
+    unbound,global_data=unbound_from_clickhouse(data["window"]["start"],data["window"]["end"])
+    data["layers"]["unbound"]=unbound
+    start=datetime.fromisoformat(data["window"]["start"].replace("Z","+00:00"))
+    end=datetime.fromisoformat(data["window"]["end"].replace("Z","+00:00"))
+    seconds=(end-start).total_seconds()
+    global_data["qps"]=round(global_data["responses"]/seconds,3) if seconds>0 else None
+    data["global"]=global_data
     data["generated_at"]=datetime.now(timezone.utc).isoformat()
     fd,name=tempfile.mkstemp(prefix=f".minute{period}.",suffix=".tmp",dir=TARGET)
     try:
