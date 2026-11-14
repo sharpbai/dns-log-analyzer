@@ -1,0 +1,9 @@
+[Unit]
+Description=Prune expired dnstap files every 15 minutes
+[Timer]
+OnCalendar=*-*-* *:0/15:00
+AccuracySec=1min
+Persistent=true
+Unit=dns-v2-dnstap-prune.service
+[Install]
+WantedBy=timers.target

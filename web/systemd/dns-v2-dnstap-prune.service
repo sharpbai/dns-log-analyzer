@@ -1,0 +1,9 @@
+[Unit]
+Description=Prune dnstap Frame Streams raw files older than 4 hours
+[Service]
+Type=oneshot
+User=duobeigw
+Group=duobeigw
+ExecStart=/usr/bin/find /home/duobeigw/dns-lab/logs/dnstap -maxdepth 1 -type f -name *.fstrm -mmin +240 -delete
+Nice=10
+NoNewPrivileges=yes
