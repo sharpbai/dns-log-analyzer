@@ -53,10 +53,11 @@ def export(source,inode,offset,max_bytes=1048576):
                     detail={'ts':stamp.replace('/','-').replace(' ','T')+'+08:00','domain':qname,'qtype':qtype,'dns_id':int(dnsid),'upstream':addr,'protocol':proto,'duration_us':int(float(duration)*factor),'status':status}
                     detail['event_id']=int.from_bytes(hashlib.blake2b(f'{source}:{stat.st_ino}:{pos}'.encode(),digest_size=8).digest(),'big')
                     details.append(detail)
-            tag='dns_v2_fanout ' if source=='fanout' else 'dns_v2_rripfilter ' if source=='domestic' else ''
+            tag=('dns_v2_fanout_upstream ' if 'dns_v2_fanout_upstream ' in line else 'dns_v2_fanout ') if source=='fanout' else 'dns_v2_rripfilter ' if source=='domestic' else ''
             if tag and tag in line:
                 try:
                     detail=json.loads(line.split(tag,1)[1])
+                    if source=='fanout':detail['event_kind']='upstream' if 'upstream' in tag else 'decision'
                     detail['event_id']=int.from_bytes(hashlib.blake2b(f'{source}:{stat.st_ino}:{pos}'.encode(),digest_size=8).digest(),'big')
                     details.append(detail)
                 except (ValueError,KeyError):pass

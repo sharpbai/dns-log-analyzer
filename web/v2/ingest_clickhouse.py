@@ -24,17 +24,19 @@ def ingest(source):
         if result.returncode:raise RuntimeError('ClickHouse insert failed: '+result.stderr[:1200])
     details=batch.get('details',[])
     if details:
-        table={'fanout':'fanout_decisions','domestic':'rripfilter_events','overseas':'overseas_exchanges'}[source]
-        normalized=[]
+        grouped={}
         for detail in details:
+            table={'fanout':'fanout_upstream_events' if detail.get('event_kind')=='upstream' else 'fanout_decisions','domestic':'rripfilter_events','overseas':'overseas_exchanges'}[source]
+            normalized=grouped.setdefault(table,[])
             row={'event_time':datetime.fromisoformat(detail['ts'].replace('Z','+00:00')).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'), 'event_id':detail['event_id']}
             for key,value in detail.items():
-                if key not in ('ts','event_id'):row[key]=value
+                if key not in ('ts','event_id','event_kind'):row[key]=value
             normalized.append(json.dumps(row,separators=(',',':')))
-        p=subprocess.run(['docker','exec','-i','dns-v2-clickhouse','clickhouse-client','--query',
-          'INSERT INTO dns_v2.'+table+' FORMAT JSONEachRow'],input='\n'.join(normalized)+'\n',
-          capture_output=True,text=True,timeout=60)
-        if p.returncode:raise RuntimeError('ClickHouse '+table+' insert failed: '+p.stderr[:1200])
+        for table,normalized in grouped.items():
+            p=subprocess.run(['docker','exec','-i','dns-v2-clickhouse','clickhouse-client','--query',
+              'INSERT INTO dns_v2.'+table+' FORMAT JSONEachRow'],input='\n'.join(normalized)+'\n',
+              capture_output=True,text=True,timeout=60)
+            if p.returncode:raise RuntimeError('ClickHouse '+table+' insert failed: '+p.stderr[:1200])
     new={'inode':batch['inode'],'offset':batch['offset']}
     fd,tmp=tempfile.mkstemp(prefix='.'+source,dir=STATE)
     try:
