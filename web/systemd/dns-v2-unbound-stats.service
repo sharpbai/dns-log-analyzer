@@ -1,0 +1,10 @@
+[Unit]
+Description=Sample Unbound cache and recursion statistics into ClickHouse
+After=network-online.target docker.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/dns-v2-unbound-stats.py
+TimeoutStartSec=30
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict

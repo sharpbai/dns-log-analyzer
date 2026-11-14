@@ -1,0 +1,9 @@
+[Unit]
+Description=Sample Unbound statistics every minute
+[Timer]
+OnCalendar=*-*-* *:*:20
+AccuracySec=5s
+Persistent=true
+Unit=dns-v2-unbound-stats.service
+[Install]
+WantedBy=timers.target
