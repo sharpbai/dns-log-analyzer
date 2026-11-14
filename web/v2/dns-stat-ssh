@@ -20,7 +20,7 @@ case "$cmd" in
     exec /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_dnstap_export.py file "$2" ;;
 esac
 case "$cmd" in
-  v2-unbound-stats) exec /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_unbound_stats.py ;;
+  v2-unbound-stats) exec /usr/bin/sudo -n -u duobeigw /usr/bin/python3 /home/duobeigw/sources/dns-log-analyzer/scripts/v2_unbound_stats.py ;;
 esac
 case "$cmd" in
   minute1|minute5) exec /usr/local/bin/dns-summary "$SSH_ORIGINAL_COMMAND" --json --aggregate-only --exact-short ;;
