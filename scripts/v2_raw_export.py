@@ -35,7 +35,8 @@ def export(source,inode,offset,max_bytes=1048576):
         return {'rotation':True,'inode':stat.st_ino,'offset':0,'events':[]}
     events=[]
     details=[]
-    if source=='overseas':max_bytes=8388608
+    # Both sources scan the same verbose dnsproxy.log; 1 MiB/minute cannot keep up.
+    if source in ('overseas','overseas_final'):max_bytes=8388608
     with path.open('rb') as f:
         f.seek(offset)
         stop=min(stat.st_size,offset+max_bytes)
