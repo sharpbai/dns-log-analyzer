@@ -12,17 +12,17 @@ def unbound_from_clickhouse(start,end):
     where=f"source = 'unbound_dnstap' AND event_time >= '{start}' AND event_time < '{end}'"
     query=("SELECT count(),countIf(rcode = '2'),countIf(rcode = '3'),"
            "countIf(qtype = '1'),countIf(qtype = '28'),"
-           "quantileExactIf(0.5)(duration_us,match_status = 'matched'),"
-           "quantileExactIf(0.95)(duration_us,match_status = 'matched'),"
-           "quantileExactIf(0.99)(duration_us,match_status = 'matched'),"
+           "quantileTDigestIf(0.5)(duration_us,match_status = 'matched'),"
+           "quantileTDigestIf(0.95)(duration_us,match_status = 'matched'),"
+           "quantileTDigestIf(0.99)(duration_us,match_status = 'matched'),"
            "countIf(match_status = 'matched'),countIf(match_status = 'ambiguous'),"
            "countIf(match_status = 'unmatched_response') FROM dns_v2.events WHERE "+where+" FORMAT JSONEachRow")
-    cmd=["docker","exec","dns-v2-clickhouse","clickhouse-client","--query",query]
+    cmd=["docker","exec","dns-v2-clickhouse","clickhouse-client","--max_threads=2","--query",query]
     result=subprocess.run(cmd,capture_output=True,text=True,timeout=20,check=True)
     vals=list(json.loads(result.stdout).values())
     total,servfail,nxdomain,a,aaaa,p50,p95,p99,matched,ambiguous,unmatched=vals
     bins_query=("SELECT multiIf("+" ,".join(f"duration_us < {b*1000},{i}" for i,b in enumerate(BOUNDS))+f",{len(BOUNDS)}) AS bucket,count() AS n FROM dns_v2.events WHERE "+where+" AND match_status = 'matched' GROUP BY bucket FORMAT JSONEachRow")
-    b=subprocess.run(["docker","exec","dns-v2-clickhouse","clickhouse-client","--query",bins_query],capture_output=True,text=True,timeout=20,check=True)
+    b=subprocess.run(["docker","exec","dns-v2-clickhouse","clickhouse-client","--max_threads=2","--query",bins_query],capture_output=True,text=True,timeout=20,check=True)
     counts=[0]*(len(BOUNDS)+1)
     for line in b.stdout.splitlines():
         entry=json.loads(line);counts[int(entry["bucket"])]=int(entry["n"])
@@ -31,7 +31,7 @@ def unbound_from_clickhouse(start,end):
     return {"metrics":metrics,"latency_ms":latency}, {"responses":total,"latency_ms":{k:latency[k] for k in ("p50","p95","p99")},"failure_count":servfail,"failure_rate":round(100*servfail/total,3) if total else None,"cache_flag_hits":None,"cache_flag_rate":None,"qtypes":{"A":a,"AAAA":aaaa},"qps":None,"scope":"unbound_dnstap_responses","match_quality":{"matched":matched,"ambiguous":ambiguous,"unmatched_response":unmatched}}
 
 def ch_rows(query):
-    result=subprocess.run(["docker","exec","dns-v2-clickhouse","clickhouse-client","--query",query+" FORMAT JSONEachRow"],capture_output=True,text=True,timeout=20,check=True)
+    result=subprocess.run(["docker","exec","dns-v2-clickhouse","clickhouse-client","--max_threads=2","--query",query+" FORMAT JSONEachRow"],capture_output=True,text=True,timeout=20,check=True)
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
 def unbound_cache_stats(start,end):
     # The sample cadence is one minute. Include the immediately preceding
@@ -74,8 +74,8 @@ def domestic_filter_details(start,end):
        "countIf(action='upstream_error') upstream_error,countIf(action='transport_error') transport_error,"
        "countIf(reason='all_filtered') all_filtered,countIf(reason='no_terminal_answer') no_terminal_answer,"
        "countIf(upstream_rcode=2) upstream_servfail,countIf(upstream_rcode=3) upstream_nxdomain,"
-       "quantileExact(0.5)(filter_us) filter_p50,quantileExact(0.95)(filter_us) filter_p95,"
-       "quantileExact(0.99)(filter_us) filter_p99,quantileExact(0.95)(elapsed_us) elapsed_p95,"
+       "quantileTDigest(0.5)(filter_us) filter_p50,quantileTDigest(0.95)(filter_us) filter_p95,"
+       "quantileTDigest(0.99)(filter_us) filter_p99,quantileTDigest(0.95)(elapsed_us) elapsed_p95,"
        "sum(arrayCount(x -> position(x, ':') = 0, rejected_ips)) rejected_ipv4,"
        "sum(arrayCount(x -> position(x, ':') > 0, rejected_ips)) rejected_ipv6 "
        f"FROM dns_v2.rripfilter_events WHERE {where}")
@@ -114,8 +114,8 @@ def overseas_branch_health(start,end):
     a=datetime.fromisoformat(start.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
     b=datetime.fromisoformat(end.replace('Z','+00:00')).strftime('%Y-%m-%d %H:%M:%S')
     q=("SELECT count() responses,countIf(rcode=0) noerror,countIf(rcode=3) nxdomain,"
-       "countIf(rcode=2) servfail,quantileExact(0.5)(duration_us) p50,"
-       "quantileExact(0.95)(duration_us) p95,quantileExact(0.99)(duration_us) p99,"
+       "countIf(rcode=2) servfail,quantileTDigest(0.5)(duration_us) p50,"
+       "quantileTDigest(0.95)(duration_us) p95,quantileTDigest(0.99)(duration_us) p99,"
        "countIf(duration_us>=3000000) ge3s "
        f"FROM dns_v2.dnsproxy_final_responses WHERE event_time >= '{a}' AND event_time < '{b}'")
     r=ch_rows(q)[0];n=r['responses']
@@ -160,7 +160,7 @@ def source_health():
     out={}
     for table in tables:
         extra=" WHERE source='unbound_dnstap'" if table=='events' else ''
-        rows=ch_rows(f"SELECT max(event_time) AS latest,count() AS n FROM dns_v2.{table}"+extra)
+        rows=ch_rows(f"SELECT max(event_time) AS latest FROM dns_v2.{table}"+extra)
         row=rows[0] if rows else {}
         latest=row.get('latest')
         if latest and latest!='1970-01-01 00:00:00.000000':
