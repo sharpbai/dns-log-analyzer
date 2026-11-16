@@ -6,7 +6,7 @@ BASE=Path('/home/duobeigw/dns-lab/logs')
 PATHS={s:BASE/(s+'.stdout') for s in ('unbound','fanout','domestic')}
 PATHS['overseas']=BASE/'dnsproxy.log'
 PATHS['overseas_final']=BASE/'dnsproxy.log'
-OVERSEAS=re.compile(r'^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d+) DEBUG upstream exchange completed addr=(\S+) proto=(\S+) qtype=(\S+) qname=(\S+) id=(\d+) duration=([\d.]+)(ms|s|µs|us) status=(\S+)')
+OVERSEAS=re.compile(r'^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d+) DEBUG upstream exchange completed (?:prefix=\S+ )?addr=(\S+) proto=(\S+) qtype=(\S+) qname=(\S+) id=(\d+) duration=([\d.]+)(ms|s|µs|us) status=(\S+)')
 UNBOUND=re.compile(r'^\[(\d+)\].*? info: (\S+) (\S+) (\S+) IN (\S+) ([\d.]+) ([01]) (\d+)$')
 COREDNS=re.compile(r'^\[INFO\] (\S+) (\S+) - (\d+) "([^"]+)" (\S+) (\S+) (\d+) ([\d.]+)s')
 def parse(source,line):
