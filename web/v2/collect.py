@@ -129,9 +129,9 @@ def dnsproxy_health(start,end):
     where=f"event_time >= '{a}' AND event_time < '{b}'"
     upstreams=[('Cloudflare DoH','https://cloudflare-dns.com:443/dns-query'),('Google DoH','https://dns.google:443/dns-query'),('Cloudflare UDP','1.1.1.1:53'),('Google UDP','8.8.8.8:53')]
     q=("SELECT upstream,count() total,countIf(status='ok') ok,"
-       "quantileExactIf(0.5)(duration_us,status='ok') p50,"
-       "quantileExactIf(0.95)(duration_us,status='ok') p95,"
-       "quantileExactIf(0.99)(duration_us,status='ok') p99,"
+       "quantileTDigestIf(0.5)(duration_us,status='ok') p50,"
+       "quantileTDigestIf(0.95)(duration_us,status='ok') p95,"
+       "quantileTDigestIf(0.99)(duration_us,status='ok') p99,"
        "countIf(duration_us>=1000000) ge1s,countIf(duration_us>=2000000) ge2s,"
        "countIf(duration_us>=3000000) ge3s "
        f"FROM dns_v2.overseas_exchanges WHERE {where} GROUP BY upstream")
@@ -149,7 +149,7 @@ def dnsproxy_health(start,end):
     # At most 60 buckets per window, to keep 24h snapshots small.
     bucket=60 if (datetime.fromisoformat(b)-datetime.fromisoformat(a)).total_seconds()<=3600 else 1800
     trend=ch_rows("SELECT toStartOfInterval(event_time,INTERVAL "+str(bucket)+" SECOND) bucket,upstream,"
-                  "quantileExactIf(0.95)(duration_us,status='ok')/1000 p95,countIf(status='ok') ok "
+                  "quantileTDigestIf(0.95)(duration_us,status='ok')/1000 p95,countIf(status='ok') ok "
                   f"FROM dns_v2.overseas_exchanges WHERE {where} AND upstream IN ("+
                   ','.join("'"+x[1]+"'" for x in upstreams)+") GROUP BY bucket,upstream ORDER BY bucket")
     return {'upstreams':items,'trend':[dict(time=r['bucket'],upstream=r['upstream'],p95=round(r['p95'],2) if r['ok'] else None,samples=r['ok']) for r in trend], 'bucket_seconds':bucket}
