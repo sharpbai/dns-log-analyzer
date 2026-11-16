@@ -5,7 +5,7 @@ from pathlib import Path
 BASE=Path('/home/duobeigw/dns-lab/logs')
 PATHS={s:BASE/(s+'.stdout') for s in ('unbound','fanout','domestic')}
 PATHS['overseas']=BASE/'dnsproxy.log'
-PATHS['overseas_final']=BASE/'dnsproxy-final.log'
+PATHS['overseas_final']=BASE/'dnsproxy.log'
 OVERSEAS=re.compile(r'^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\.\d+) DEBUG upstream exchange completed addr=(\S+) proto=(\S+) qtype=(\S+) qname=(\S+) id=(\d+) duration=([\d.]+)(ms|s|µs|us) status=(\S+)')
 UNBOUND=re.compile(r'^\[(\d+)\].*? info: (\S+) (\S+) (\S+) IN (\S+) ([\d.]+) ([01]) (\d+)$')
 COREDNS=re.compile(r'^\[INFO\] (\S+) (\S+) - (\d+) "([^"]+)" (\S+) (\S+) (\d+) ([\d.]+)s')
@@ -46,9 +46,14 @@ def export(source,inode,offset,max_bytes=1048576):
                 f.seek(pos)
                 break
             line=raw.decode('utf-8','replace').rstrip()
-            if source=='overseas_final' and line.startswith('dns_v2_dnsproxy_final '):
+            if source=='overseas_final' and 'dns_v2_dnsproxy_final ' in line:
                 try:
-                    detail=json.loads(line.split(' ',1)[1]);detail['event_id']=int.from_bytes(hashlib.blake2b(f'{source}:{stat.st_ino}:{pos}'.encode(),digest_size=8).digest(),'big');details.append(detail)
+                    if ' msg="dns_v2_dnsproxy_final ' in line:
+                        quoted=line.split(' msg=',1)[1]
+                        payload=json.loads(quoted).split('dns_v2_dnsproxy_final ',1)[1]
+                    else:
+                        payload=line.split('dns_v2_dnsproxy_final ',1)[1]
+                    detail=json.loads(payload);detail['event_id']=int.from_bytes(hashlib.blake2b(f'{source}:{stat.st_ino}:{pos}'.encode(),digest_size=8).digest(),'big');details.append(detail)
                 except (ValueError,KeyError):pass
             if source=='overseas':
                 match=OVERSEAS.match(line)
