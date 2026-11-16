@@ -53,7 +53,7 @@ def export(source,inode,offset,max_bytes=1048576):
                         payload=json.loads(quoted).split('dns_v2_dnsproxy_final ',1)[1]
                     else:
                         payload=line.split('dns_v2_dnsproxy_final ',1)[1]
-                    detail=json.loads(payload);detail['event_id']=int.from_bytes(hashlib.blake2b(f'{source}:{stat.st_ino}:{pos}'.encode(),digest_size=8).digest(),'big');details.append(detail)
+                    detail=json.JSONDecoder().raw_decode(payload)[0];detail['event_id']=int.from_bytes(hashlib.blake2b(f'{source}:{stat.st_ino}:{pos}'.encode(),digest_size=8).digest(),'big');details.append(detail)
                 except (ValueError,KeyError):pass
             if source=='overseas':
                 match=OVERSEAS.match(line)
